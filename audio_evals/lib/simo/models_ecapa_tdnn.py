@@ -271,7 +271,12 @@ class ECAPA_TDNN(nn.Module):
                 torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
                 # 优先从本地缓存加载，避免联网检查 GitHub
                 local_cache_path = os.path.expanduser("~/.cache/torch/hub/s3prl_s3prl_main")
-                if os.path.exists(local_cache_path):
+                local_checkpoint = os.environ.get("WAVLM_LARGE_BACKBONE", "")
+                if local_checkpoint:
+                    from s3prl.upstream.wavlm.hubconf import wavlm_local
+
+                    self.feature_extract = wavlm_local(local_checkpoint)
+                elif os.path.exists(local_cache_path):
                     self.feature_extract = torch.hub.load(local_cache_path, "wavlm_large", source='local')
                 else:
                     # 本地没有缓存，联网下载

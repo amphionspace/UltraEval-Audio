@@ -19,9 +19,20 @@ class ComputeScore:
     def __init__(self, model_path, p_model_path, p808_model_path) -> None:
         """Initializes the ComputeScore class with ONNX model paths."""
         try:
-            self.onnx_sess = ort.InferenceSession(model_path)
-            self.p_onnx_sess = ort.InferenceSession(p_model_path)
-            self.p808_onnx_sess = ort.InferenceSession(p808_model_path)
+            # Optional resource limit for concurrent evaluators. Leave the
+            # original ONNX defaults intact when the variable is not set.
+            options = None
+            if "DNSMOS_NUM_THREADS" in os.environ:
+                threads = int(os.environ["DNSMOS_NUM_THREADS"])
+                if threads < 1:
+                    raise ValueError("DNSMOS_NUM_THREADS must be positive")
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = threads
+                options.inter_op_num_threads = 1
+                options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            self.onnx_sess = ort.InferenceSession(model_path, sess_options=options)
+            self.p_onnx_sess = ort.InferenceSession(p_model_path, sess_options=options)
+            self.p808_onnx_sess = ort.InferenceSession(p808_model_path, sess_options=options)
             print("DNSMOS models loaded successfully.", flush=True)
         except Exception as e:
             print(f"Error loading ONNX models: {e}", flush=True)

@@ -115,7 +115,10 @@ class Registry:
         self, path: Path
     ) -> Generator[Tuple[str, Path, dict], None, None]:
         # NOTE: glob("*.yaml") only matches one-level files; rglob searches recursively.
-        files = sorted(Path(path).rglob("*.yaml"))
+        files = sorted(
+            file for file in Path(path).rglob("*.yaml")
+            if ".ipynb_checkpoints" not in file.parts
+        )
         for file in files:
             yield from self._load_file(file)
 

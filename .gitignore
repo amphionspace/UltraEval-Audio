@@ -5,6 +5,10 @@ cyb_registry/
 temp*
 # 忽略操作系统生成的文件
 init_model/
+.tools/
+.cache/
+.ipynb_checkpoints/
+third_party/
 anna/
 .vscode/
 envs/

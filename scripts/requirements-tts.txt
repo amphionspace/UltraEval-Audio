@@ -1,0 +1,4 @@
+-r ../third_party/breeze-tts/requirements.txt
+# Bound UI dependencies to versions compatible with transformers 4.57.3.
+gradio==5.49.1
+huggingface_hub==0.36.0
