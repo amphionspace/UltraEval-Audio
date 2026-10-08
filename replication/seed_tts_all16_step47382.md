@@ -1,9 +1,9 @@
 # All16 step 47382：Seed-TTS 评测入口
 
 训练方式、16 个数据集、模块初始化与冻结、历史 Qwen 对比、诊断结论和 greedy 运行命令已统一到
-[LM-TTS-Training 训练与评测 README](../../LM-TTS-Training/docs/training/README.md)。两仓库位于同一父目录时可直接跳转。
+[LM-TTS-Training 训练与评测报告](../../LM-TTS-Training/docs/training/all16-training-and-seedtts-evaluation.md)。两仓库位于同一父目录时可直接跳转。
 
-只查看线上仓库时，使用 [LM-TTS-Training 中的同一文档](https://github.com/amphionspace/LM-TTS-Training/blob/main/docs/training/README.md)。
+只查看线上仓库时，使用 [LM-TTS-Training 中的同一文档](https://github.com/amphionspace/LM-TTS-Training/blob/main/docs/training/all16-training-and-seedtts-evaluation.md)。
 
 本仓库相对路径：
 
