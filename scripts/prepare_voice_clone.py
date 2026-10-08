@@ -1,4 +1,5 @@
 """Materialize the exact six voice-clone splits used by replication/qwen3_tts.md."""
+import argparse
 import hashlib
 import io
 import json
@@ -11,12 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--group", choices=["all", "seed"], default="all")
+    args = parser.parse_args()
     counts = {}
     specs = [(f"seed_tts_eval_{lang}", "TwinkStart/Seed-TTS-Eval", f"{lang}/*.parquet", lang)
              for lang in ("en", "zh")]
-    specs += [(f"cv3_{split}", "yuekai/CV3-Eval", f"data/{split}-*.parquet", split.rsplit("_", 1)[1])
+    if args.group == "all":
+        specs += [(f"cv3_{split}", "yuekai/CV3-Eval", f"data/{split}-*.parquet", split.rsplit("_", 1)[1])
               for split in ("zero_shot_en", "zero_shot_zh", "zero_shot_hard_en", "zero_shot_hard_zh")]
-    manifest_dir = ROOT / "raw_data" / "voice_clone_manifests"
+    manifest_dir = ROOT / "raw_data" / ("seed_tts_manifests" if args.group == "seed" else "voice_clone_manifests")
     manifest_dir.mkdir(parents=True, exist_ok=True)
     for name, repo, pattern, lang in specs:
         source = ROOT / "raw_data" / repo

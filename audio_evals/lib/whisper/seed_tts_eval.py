@@ -8,6 +8,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import soundfile as sf
 import scipy
+from audio_evals.gpu_budget import configure_cuda_budget
 
 
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +24,7 @@ if __name__ == "__main__":
         help="Chunk size in seconds (0 means no chunking)",
     )
     config = parser.parse_args()
+    configure_cuda_budget()
 
     # Initialize model
     device = "cuda:0" if torch.cuda.is_available() else "cpu"

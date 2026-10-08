@@ -1,6 +1,9 @@
 import atexit
 import subprocess
 import logging
+import os
+from pathlib import Path
+import shlex
 from functools import wraps
 
 from audio_evals.env_setup import ensure_env
@@ -36,9 +39,7 @@ def isolated(
             # 自动检测 Python 版本
             python_version = (
                 subprocess.check_output(
-                    f"source {env_path}/bin/activate && python --version",
-                    shell=True,
-                    executable="/bin/bash",
+                    [f"{env_path}/bin/python", "--version"],
                     text=True,
                 )
                 .strip()
@@ -50,9 +51,7 @@ def isolated(
             # shared libpythonX.Y under the underlying install's own lib/ dir,
             # which isn't on the default dynamic linker search path.
             python_base_prefix = subprocess.check_output(
-                f"source {env_path}/bin/activate && python -c 'import sys; print(sys.base_prefix)'",
-                shell=True,
-                executable="/bin/bash",
+                [f"{env_path}/bin/python", "-c", "import sys; print(sys.base_prefix)"],
                 text=True,
             ).strip()
             python_lib_dir = f"{python_base_prefix}/lib"
@@ -86,12 +85,15 @@ def isolated(
 
             # 构建完整命令
             command = (
-                f"source {env_path}/bin/activate && "
+                # Conda prefixes do not contain the venv-specific bin/activate script.
+                f"export PATH={shlex.quote(env_path + '/bin')}:$PATH && "
                 f"{cuda_env}"
                 f"export LD_LIBRARY_PATH={lib_path}:{cuda_runtime_lib}:{python_lib_dir}:$LD_LIBRARY_PATH && "
                 f"{env_path}/bin/python -u {script_path} {args_str}"
             )
             logger.info(f"Running command: {command}")
+            child_env = dict(os.environ)
+            child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + child_env.get("PYTHONPATH", "")
             self.process = subprocess.Popen(
                 command,
                 shell=True,
@@ -100,6 +102,7 @@ def isolated(
                 stderr=subprocess.PIPE,
                 text=True,
                 executable="/bin/bash",
+                env=child_env,
             )
 
             # 添加检查进程状态并打印错误信息的方法

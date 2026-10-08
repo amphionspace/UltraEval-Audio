@@ -1,4 +1,7 @@
 import argparse
+import json
+import os
+from pathlib import Path
 import select
 import sys
 
@@ -7,6 +10,7 @@ import torch.nn.functional as F
 from torchaudio.transforms import Resample
 from models_ecapa_tdnn import ECAPA_TDNN_SMALL
 import librosa
+from audio_evals.gpu_budget import configure_cuda_budget
 
 MODEL_LIST = [
     "ecapa_tdnn",
@@ -32,7 +36,7 @@ def init_model(model_name, checkpoint=None):
 
 
 def verification(wav1, wav2, model=None, wav2_cut_wav1=False, device="cuda:0"):
-
+    audio_paths = {"prediction": str(wav1), "reference": str(wav2)}
     wav1, sr1 = librosa.load(wav1, sr=None, mono=False)
     if len(wav1.shape) == 2:
         wav1 = wav1[0, :]  # only use one channel
@@ -50,9 +54,31 @@ def verification(wav1, wav2, model=None, wav2_cut_wav1=False, device="cuda:0"):
     wav1 = wav1.cuda(device)
     wav2 = wav2.cuda(device)
 
-    with torch.no_grad():
-        emb1 = model(wav1)
-        emb2 = model(wav2)
+    def embeddings():
+        with torch.no_grad():
+            return model(wav1), model(wav2)
+
+    retry_on_cpu = False
+    try:
+        emb1, emb2 = embeddings()
+    except torch.cuda.OutOfMemoryError:
+        if os.environ.get("AUDIO_EVALS_SIM_CPU_FALLBACK") != "1":
+            raise
+        retry_on_cpu = True
+    if retry_on_cpu:
+        # Preserve the complete waveform and scoring model for unusually long outputs.
+        wav1, wav2 = wav1.cpu(), wav2.cpu()
+        model.cpu()
+        torch.cuda.empty_cache()
+        try:
+            emb1, emb2 = embeddings()
+            log_dir = Path(os.environ["AUDIO_EVALS_RUNTIME_LOG_DIR"])
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / f"wavlm-cpu-fallback-{os.getpid()}.jsonl").open("a") as log:
+                log.write(json.dumps({**audio_paths,
+                                      "device": "cpu", "reason": "cuda_allocation_limit"}) + "\n")
+        finally:
+            model.to(device)
 
     sim = F.cosine_similarity(emb1, emb2)
     print(
@@ -70,6 +96,7 @@ if __name__ == "__main__":
         "--path", type=str, required=True, help="Path to checkpoint file"
     )
     config = parser.parse_args()
+    configure_cuda_budget()
 
     # now just compare two audios similarity
     model_name = "wavlm_large"

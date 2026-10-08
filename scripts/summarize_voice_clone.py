@@ -18,15 +18,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     parser.add_argument("--allow-incomplete", action="store_true")
-    parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
+    parser.add_argument("--models", nargs="+", default=list(MODELS))
+    parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
     parser.add_argument("--output-prefix", default="")
     args = parser.parse_args()
     if "/" in args.output_prefix or "\\" in args.output_prefix:
         parser.error("output-prefix must be a filename prefix, not a path")
     run_dir = ROOT / args.run_dir
-    metadata = json.loads((ROOT / "raw_data/voice_clone_manifests/manifest_metadata.json").read_text())
+    metadata = json.loads((ROOT / args.manifest_dir / "manifest_metadata.json").read_text())
     canonical = {}
-    for file in (ROOT / "raw_data/voice_clone_manifests").glob("*.jsonl"):
+    for file in (ROOT / args.manifest_dir).glob("*.jsonl"):
         raw = file.read_bytes()
         if file.stem not in metadata or hashlib.sha256(raw).hexdigest() != metadata[file.stem]["sha256"]:
             raise ValueError(f"Input manifest changed: {file}")

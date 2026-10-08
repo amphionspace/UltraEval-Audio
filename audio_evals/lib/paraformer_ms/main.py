@@ -7,6 +7,7 @@ import tempfile
 import soundfile
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
+from audio_evals.gpu_budget import configure_cuda_budget
 
 
 def get_model(path, is_streaming=False):
@@ -17,7 +18,7 @@ def get_model(path, is_streaming=False):
     if is_streaming:
         model_cfg = {}
     print("Loading model from: {}".format(path))
-    model = AutoModel(model=path, **model_cfg)
+    model = AutoModel(model=path, disable_update=True, **model_cfg)
     return model
 
 
@@ -28,6 +29,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--chunk_size", type=int, default=0, help="Chunk size")
     config = parser.parse_args()
+    configure_cuda_budget("AUDIO_EVALS_PARAFORMER_MEMORY_GIB")
     is_streaming = config.path.endswith("streaming") or config.path.endswith("online")
     chunk_size = [0, 10, 5]  # [0, 10, 5] 600ms, [0, 8, 4] 480ms
     encoder_chunk_look_back = (

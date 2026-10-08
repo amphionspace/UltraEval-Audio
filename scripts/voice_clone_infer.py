@@ -1,5 +1,7 @@
 """Resumable inference using official APIs and UltraEval replication parameters."""
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +28,15 @@ MODEL_IDS = {"qwen3-tts-0.6b-base": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=MODEL_IDS, required=True)
+    parser.add_argument("--model", required=True, help="Registered model name or local model output label")
+    parser.add_argument("--model-path", help="Exported local Qwen3-TTS checkpoint")
+    parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl"])
+    parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
+    parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
+    parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
+    parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
+    parser.add_argument("--gpu-memory-gib", type=float, default=0,
+                        help="Maximum PyTorch allocator budget; clamp to free memory minus a 2 GiB reserve")
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -35,12 +45,42 @@ def main():
                         help="Breeze only: use its official accelerated runtime")
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     args = parser.parse_args()
+    if Path(args.model).name != args.model or args.model in {".", ".."}:
+        parser.error("model must be a directory name, not a path")
+    if args.model_path and not args.conditioning:
+        parser.error("a local checkpoint requires an explicit conditioning mode")
+    if not args.model_path and args.model not in MODEL_IDS:
+        parser.error("unknown model; supply --model-path for a local checkpoint")
+    if args.greedy and not (args.model_path or args.model.startswith("qwen")):
+        parser.error("greedy is supported only for Qwen inference")
+    if args.num_shards < 1 or not 0 <= args.shard < args.num_shards or args.batch_size < 1 or args.limit < 0:
+        parser.error("invalid shard, batch size or limit")
+    if args.model_path and args.batch_size != 1:
+        parser.error("local checkpoint comparisons require batch size 1 for per-sample seeds")
     torch.set_num_threads(2)
-    model_dir = ROOT / "init_model" / MODEL_IDS[args.model]
+    model_dir = (ROOT / args.model_path if args.model_path else ROOT / "init_model" / MODEL_IDS[args.model]).resolve()
     output_dir = ROOT / args.run_dir / args.model
     output_dir.mkdir(parents=True, exist_ok=True)
+    shard_lock = (output_dir / f".inference-{args.shard:02d}.lock").open("a")
+    fcntl.flock(shard_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    manifests = sorted((ROOT / args.manifest_dir).glob("*.jsonl"))
+    if not manifests:
+        raise ValueError("No input manifests found")
+    identity = {"arguments": vars(args).copy(), "model_path": str(model_dir),
+                "manifests": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in manifests}}
+    if args.model_path:
+        identity["export"] = json.loads((model_dir / "export.json").read_text())
+    receipt = output_dir / f"invocation-{args.shard:02d}.json"
+    if receipt.exists():
+        previous = json.loads(receipt.read_text())
+        previous["arguments"].setdefault("greedy", False)
+        # Allocation limits are operational settings, not generation parameters.
+        previous["arguments"]["gpu_memory_gib"] = args.gpu_memory_gib
+        if previous != identity:
+            raise ValueError("Resume settings or input identity changed; use a new run directory")
+    receipt.write_text(json.dumps(identity, indent=2))
     rows = []
-    for file in sorted((ROOT / "raw_data/voice_clone_manifests").glob("*.jsonl")):
+    for file in manifests:
         subset = [json.loads(line) for line in file.read_text().splitlines()]
         if args.limit:
             subset = subset[:args.limit]
@@ -56,17 +96,28 @@ def main():
     print(f"model={args.model} shard={args.shard} remaining={len(rows)} CUDA_VISIBLE_DEVICES={os.getenv('CUDA_VISIBLE_DEVICES')}", flush=True)
     if not rows:
         return
-    if args.model.startswith("qwen"):
+    effective_budget_gib = None
+    if args.gpu_memory_gib:
+        free, total = torch.cuda.mem_get_info(0)
+        budget = min(args.gpu_memory_gib * 1024**3, free - 2 * 1024**3)
+        if budget < 4 * 1024**3:
+            raise RuntimeError(f"Only {free / 1024**3:.2f} GiB free; need at least 4 GiB for inference plus 2 GiB reserve")
+        torch.cuda.set_per_process_memory_fraction(budget / total, 0)
+        effective_budget_gib = budget / 1024**3
+        print(f"Requested GPU budget={args.gpu_memory_gib} GiB; effective={effective_budget_gib:.2f} GiB", flush=True)
+    paths_used = {}
+    if args.model_path or args.model.startswith("qwen"):
         args.fast = False  # Qwen uses the native SDPA path, not Breeze's fast runtime.
         from qwen_tts import Qwen3TTSModel
         model = Qwen3TTSModel.from_pretrained(str(model_dir), device_map="cuda:0",
                                              dtype=torch.bfloat16, attn_implementation="sdpa")
-        params = dict(max_new_tokens=2048, do_sample=True, top_k=50, top_p=1.0,
+        params = dict(max_new_tokens=2048, do_sample=not args.greedy, top_k=50, top_p=1.0,
                       temperature=0.9, repetition_penalty=1.05,
-                      subtalker_dosample=True, subtalker_top_k=50,
+                      subtalker_dosample=not args.greedy, subtalker_top_k=50,
                       subtalker_top_p=1.0, subtalker_temperature=0.9)
-        params["x_vector_only_mode"] = args.model.endswith("-xvec_only")
-        icl_only = args.model.endswith("-icl_only")
+        params["x_vector_only_mode"] = (args.conditioning == "speaker_only" if args.conditioning else args.model.endswith("-xvec_only"))
+        params["non_streaming_mode"] = args.non_streaming
+        icl_only = not args.model_path and args.model.endswith("-icl_only")
         paths_used = {"speaker_embedding": False, "icl_calls": 0}
         original_speaker_prompt = model.model.generate_speaker_prompt
         original_icl_prompt = model.model.generate_icl_prompt
@@ -92,7 +143,7 @@ def main():
             paths_used["icl_calls"] = 0
             result = model.generate_voice_clone(
                 text=[r["text"] for r in batch],
-                language=["English" if r["language"] == "en" else "Chinese" for r in batch],
+                language=["Auto" if args.language_auto else ("English" if r["language"] == "en" else "Chinese") for r in batch],
                 ref_audio=[r["prompt_audio"] for r in batch],
                 ref_text=None if params["x_vector_only_mode"] else [r["prompt_text"] for r in batch],
                 **params)
@@ -158,7 +209,11 @@ def main():
                     sf.write(path, wav, sr, subtype="PCM_16")
                     result = {**row, "model": args.model, "audio": str(path), "status": "ok",
                               "seed": seed, "sample_rate": sr, "duration": len(wav) / sr,
-                              "batch_elapsed": elapsed, "batch_size": len(batch)}
+                              "batch_elapsed": elapsed, "batch_size": len(batch),
+                              "conditioning_verified": dict(paths_used),
+                              "peak_gpu_allocated_gib": torch.cuda.max_memory_allocated() / 1024**3,
+                              "peak_gpu_reserved_gib": torch.cuda.max_memory_reserved() / 1024**3,
+                              "gpu_budget_gib": effective_budget_gib}
                     log.write(json.dumps(result, ensure_ascii=False) + "\n")
                 print(f"{args.model} shard={args.shard} {start+len(batch)}/{len(rows)} batch_seconds={elapsed:.2f}", flush=True)
             except Exception:

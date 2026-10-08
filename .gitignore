@@ -14,6 +14,8 @@ anna/
 envs/
 env/
 tests/*
+!tests/test_seed_tts_audit.py
+!tests/test_isolate_conda.py
 *.DS_Store
 .DS_Store
 ._*
@@ -103,3 +105,6 @@ coverage/
 # 忽略其他可能的备份文件
 *.bak
 *.old
+
+# Runtime session cache created by model dependencies.
+/:memory:.ses

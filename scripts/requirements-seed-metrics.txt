@@ -1,0 +1,13 @@
+-r requirements-metrics.txt
+editdistance
+immutabledict
+jinja2
+langdetect
+num2words
+openpyxl
+pydub
+rich
+sacrebleu==1.5.1
+imageio-ffmpeg
+pytest
+pycocoevalcap==1.2

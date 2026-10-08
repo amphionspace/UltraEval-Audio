@@ -208,6 +208,10 @@ CUDA_VISIBLE_DEVICES=0 python audio_evals/main.py --dataset sample --model qwen2
 
 遇到报错或者不能复现Mini-CPM-o 2.6的结果，可以先看[常见问题](FAQ.md)。
 
+评测本地训练的 Qwen3-TTS checkpoint（仅 speaker embedding / speaker embedding + ICL）：
+见 [All16 Seed-TTS 评测说明](replication/seed_tts_all16_step47382.md)，包含模型转换、独立环境、
+HF Mirror 下载、8 卡运行、断点续评和结果目录。
+
 ## 结果
 
 评测完毕，结果文件如下:

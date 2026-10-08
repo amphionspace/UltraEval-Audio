@@ -27,13 +27,16 @@ def records(files):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
-    parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
+    parser.add_argument("--models", nargs="+", default=list(MODELS))
+    parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
+    parser.add_argument("--num-shards", type=int, default=8)
     parser.add_argument("--output-name")
+    parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
     args = parser.parse_args()
     if args.output_name and Path(args.output_name).name != args.output_name:
         parser.error("output-name must be a filename, not a path")
     run_dir = ROOT / args.run_dir
-    manifest_dir = ROOT / "raw_data/voice_clone_manifests"
+    manifest_dir = ROOT / args.manifest_dir
     metadata = json.loads((manifest_dir / "manifest_metadata.json").read_text())
     canonical = {}
     for dataset, spec in metadata.items():
@@ -62,7 +65,7 @@ def main():
                 require(row[field] == canonical[key][field], f"Input identity: {model} {key} {field}")
             path = model_dir / row["dataset"] / f"{row['index']:06d}.wav"
             require(Path(row["audio"]).resolve() == path.resolve(), f"Audio path: {model} {key}")
-            require(row["index"] % 8 == int(file.stem.split("-")[-1]), f"Inference shard: {file} {key}")
+            require(row["index"] % args.num_shards == int(file.stem.split("-")[-1]), f"Inference shard: {file} {key}")
             require(row["seed"] == 42 + row["index"] and row["batch_size"] == 1,
                     f"Seed/batch: {model} {key}")
             info = sf.info(path)
@@ -91,22 +94,37 @@ def main():
             scored[key] = row
         require(set(scored) == set(canonical), f"Incomplete scores: {model} {len(scored)}")
         settings = sorted(model_dir.glob("settings-*.json"))
-        require(len(settings) == 8, f"Settings count: {model}")
+        require(len(settings) == args.num_shards, f"Settings count: {model}")
         for shard, file in enumerate(settings):
             cfg = json.loads(file.read_text())
-            require(cfg["model"] == model and cfg["shard"] == shard and cfg["num_shards"] == 8
+            require(cfg["model"] == model and cfg["shard"] == shard and cfg["num_shards"] == args.num_shards
                     and cfg["batch_size"] == 1 and cfg["limit"] == 0, f"Settings identity: {file}")
             if model == "breeze-tts-2":
                 require(cfg["fast"] and cfg["sampling"]["warmup_freeze_after_warmup"] is False,
                         f"Breeze graph settings: {file}")
             else:
-                require(cfg["icl_only_ablation"] == model.endswith("icl_only"), f"Ablation flag: {file}")
-                require(cfg["sampling"]["x_vector_only_mode"] == model.endswith("xvec_only"), f"xvec flag: {file}")
+                local = bool(cfg.get("model_path"))
+                xvec = cfg.get("conditioning") == "speaker_only" if local else model.endswith("xvec_only")
+                icl_only = not local and model.endswith("icl_only")
+                require(cfg["icl_only_ablation"] == icl_only, f"Ablation flag: {file}")
+                require(cfg["sampling"]["x_vector_only_mode"] == xvec, f"xvec flag: {file}")
                 check = json.loads((model_dir / f"conditioning-verified-{shard:02d}.json").read_text())
                 require(check["model"] == model and check["batch_size"] == 1
-                        and check["speaker_embedding"] == (not model.endswith("icl_only"))
-                        and check["icl_calls"] == (0 if model.endswith("xvec_only") else 1),
+                        and check["speaker_embedding"] == (not icl_only)
+                        and check["icl_calls"] == (0 if xvec else 1),
                         f"Runtime conditioning: {model} shard {shard}")
+                if local:
+                    greedy = cfg.get("greedy", False)
+                    if args.expect_greedy:
+                        require(greedy, f"Expected greedy inference: {file}")
+                    require(cfg["sampling"].get("do_sample", True) == (not greedy)
+                            and cfg["sampling"].get("subtalker_dosample", True) == (not greedy),
+                            f"Sampling flags disagree with greedy setting: {file}")
+                    require(cfg["non_streaming"] and cfg["language_auto"], f"Training protocol: {file}")
+                    for key, row in generated.items():
+                        if row["index"] % args.num_shards == shard:
+                            require(row.get("conditioning_verified") == {"speaker_embedding": True, "icl_calls": 0 if xvec else 1},
+                                    f"Per-sample conditioning: {model} {key}")
         receipt["models"][model] = {"generation_rows": len(generated), "score_rows": len(scored),
                                     "wav_headers_checked": len(generated), "settings_checked": len(settings),
                                     "historical_error_records": dict(historical_errors),

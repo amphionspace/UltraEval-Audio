@@ -32,7 +32,7 @@ def configure():
     registry._model["cv3-whisper"]["args"]["path"] = str(ROOT / "init_model/whisper/large-v3.pt")
     registry._model["wavlm_large"]["args"]["path"] = str(ROOT / "init_model/hidoba/wavlm_large_finetune/wavlm_large_finetune.pth")
     name = names[-1]
-    registry._model[name]["args"]["path"] = str(ROOT / "init_model/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch")
+    registry._model[name]["args"]["path"] = os.environ.get("SEED_TTS_PARAFORMER_PATH", str(ROOT / "init_model/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"))
     registry._model["dnsmos"]["args"].update({
         "model_path": str(ROOT / "init_model/DNS-Challenge/DNSMOS/DNSMOS/sig_bak_ovr.onnx"),
         "p_model_path": str(ROOT / "init_model/DNS-Challenge/DNSMOS/pDNSMOS/sig_bak_ovr.onnx"),
@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     parser.add_argument("--workers", type=int)
     parser.add_argument("--shard", type=int)
+    parser.add_argument("--models", nargs="+", help="Only score these model output directories")
     args = parser.parse_args()
     if args.workers is None:
         # Measured WavLM peak for a 164-second output: 18.23 GiB, excluding ASR.
@@ -75,6 +76,8 @@ def main():
                            "--group", args.group, "--language", args.language,
                            "--run-dir", args.run_dir, "--limit", str(args.limit),
                            "--workers", str(args.workers), "--shard", str(shard)]
+                if args.models:
+                    command += ["--models", *args.models]
                 processes.append(subprocess.Popen(command))
             while True:
                 codes = [p.poll() for p in processes]
@@ -98,6 +101,8 @@ def main():
     evaluator = registry.get_evaluator(name)
     for model_dir in sorted((ROOT / args.run_dir).iterdir()):
         if not model_dir.is_dir():
+            continue
+        if args.models and model_dir.name not in args.models:
             continue
         samples = {}
         for file in sorted(model_dir.glob("inference-*.jsonl")):
