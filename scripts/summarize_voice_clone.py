@@ -21,7 +21,10 @@ def main():
     parser.add_argument("--models", nargs="+", default=list(MODELS))
     parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
     parser.add_argument("--output-prefix", default="")
+    parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.max_audio_seconds < 0:
+        parser.error("max-audio-seconds must be nonnegative")
     if "/" in args.output_prefix or "\\" in args.output_prefix:
         parser.error("output-prefix must be a filename prefix, not a path")
     run_dir = ROOT / args.run_dir
@@ -60,7 +63,10 @@ def main():
                     score_failures.add((row["dataset"], row["index"]))
         for dataset, spec in metadata.items():
             generated = {k: v for k, v in inf.items() if k[0] == dataset}
-            scored = {k: v for k, v in scores.items() if k in generated}
+            excluded = {k: v for k, v in generated.items()
+                        if args.max_audio_seconds and v["duration"] > args.max_audio_seconds}
+            scored = {k: v for k, v in scores.items() if k in generated and k not in excluded}
+            expected_scores = spec["count"] - len(excluded)
             metrics = {}
             for score in scored.values():
                 for name, value in score.items():
@@ -71,10 +77,13 @@ def main():
             required += ["simo"] if dataset.startswith("seed") else ["speaker_sim", "OVRL", "P808_MOS"]
             row = {"model": model, "dataset": dataset, "expected": spec["count"],
                    "generated": len(generated), "scored": len(scored),
+                   "expected_scores": expected_scores, "excluded": len(excluded),
+                   "max_audio_seconds": args.max_audio_seconds,
+                   "excluded_indices": sorted(k[1] for k in excluded),
                    "unrecovered_inference_errors": sum(k[0] == dataset and k not in inf for k in failures),
                    "unrecovered_scoring_errors": sum(k[0] == dataset and k not in scores for k in score_failures),
-                   "complete": (len(generated) == len(scored) == spec["count"]
-                                and all(len(metrics.get(k, [])) == spec["count"] for k in required)),
+                   "complete": (len(generated) == spec["count"] and len(scored) == expected_scores
+                                and all(len(metrics.get(k, [])) == expected_scores for k in required)),
                    "metric_counts": {k: len(v) for k, v in metrics.items()},
                    "mean": {k: statistics.mean(v) for k, v in metrics.items()}}
             durations = sorted(v["duration"] for v in generated.values())
@@ -121,7 +130,8 @@ def main():
         dns = m.get("OVRL")
         def fmt(x):
             return "—" if x is None else f"{x:.3f}"
-        lines.append(f"| {row['model']} | {row['dataset']} | {row['generated']}/{row['expected']} | {row['scored']}/{row['expected']} | {fmt(error)} | {fmt(None if sim is None else sim*100)} | {fmt(m.get('P808_MOS'))} | {fmt(dns)} | {'完整' if row['complete'] else '未完成'} |")
+        completion = (f"完整（排除 {row['excluded']} 条）" if row["excluded"] else "完整") if row["complete"] else "未完成"
+        lines.append(f"| {row['model']} | {row['dataset']} | {row['generated']}/{row['expected']} | {row['scored']}/{row['expected_scores']} | {fmt(error)} | {fmt(None if sim is None else sim*100)} | {fmt(m.get('P808_MOS'))} | {fmt(dns)} | {completion} |")
     (run_dir / f"{args.output_prefix}results_table.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     if not args.allow_incomplete and not all(row["complete"] for row in table):

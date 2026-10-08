@@ -50,7 +50,10 @@ def main():
     parser.add_argument("--workers", type=int)
     parser.add_argument("--shard", type=int)
     parser.add_argument("--models", nargs="+", help="Only score these model output directories")
+    parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.max_audio_seconds < 0:
+        parser.error("max-audio-seconds must be nonnegative")
     if args.workers is None:
         # Measured WavLM peak for a 164-second output: 18.23 GiB, excluding ASR.
         args.workers = 2 if args.group == "seed" else 4
@@ -75,7 +78,8 @@ def main():
                 command = [sys.executable, "-u", str(Path(__file__).resolve()),
                            "--group", args.group, "--language", args.language,
                            "--run-dir", args.run_dir, "--limit", str(args.limit),
-                           "--workers", str(args.workers), "--shard", str(shard)]
+                           "--workers", str(args.workers), "--shard", str(shard),
+                           "--max-audio-seconds", str(args.max_audio_seconds)]
                 if args.models:
                     command += ["--models", *args.models]
                 processes.append(subprocess.Popen(command))
@@ -110,6 +114,7 @@ def main():
                 row = json.loads(line)
                 if (row.get("status") == "ok" and row["dataset"].startswith(args.group)
                         and row["language"] == args.language
+                        and (not args.max_audio_seconds or row["duration"] <= args.max_audio_seconds)
                         and (args.shard is None or row["index"] % args.workers == args.shard)):
                     samples[(row["dataset"], row["index"])] = row
         suffix = "" if args.shard is None else f"-{args.shard:02d}"

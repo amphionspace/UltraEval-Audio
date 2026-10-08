@@ -136,3 +136,49 @@ def test_similarity_allocation_failure_retries_full_waveforms(tmp_path, monkeypa
     record = json.loads(next(tmp_path.glob("wavlm-cpu-fallback-*.jsonl")).read_text())
     assert record["prediction"] == "prediction.wav"
     assert record["reference"] == "reference.wav"
+
+
+@pytest.mark.parametrize("duration", [30.0, 30.08])
+def test_duration_filter_preserves_coverage_and_threshold(tmp_path, monkeypatch, duration):
+    from scripts import summarize_voice_clone
+
+    inputs, run, model, row = setup_run(tmp_path)
+    dataset = row["dataset"]
+    extra = {**row, "index": 1, "seed": 43, "duration": duration,
+             "audio": str(model / dataset / "000001.wav")}
+    sf.write(extra["audio"], np.zeros(round(duration * 24000)), 24000, subtype="PCM_16")
+    with (model / "inference-00.jsonl").open("a") as stream:
+        stream.write(json.dumps(extra) + "\n")
+    manifest = inputs / f"{dataset}.jsonl"
+    original = json.loads(manifest.read_text())
+    raw = manifest.read_text() + json.dumps({**original, "index": 1}) + "\n"
+    manifest.write_text(raw)
+    (inputs / "manifest_metadata.json").write_text(json.dumps({dataset: {
+        "count": 2, "sha256": hashlib.sha256(raw.encode()).hexdigest()}}))
+    score_path = model / "scores-seed-en.jsonl"
+    extra_score = {"model": "speaker_only", "dataset": dataset, "index": 1, "status": "ok",
+                   "score": {"pred": extra["audio"], "ref": extra["prompt_audio"],
+                             "label_text": extra["text"], "wer%": 99, "simo": 0.1}}
+    if duration <= 30:
+        with score_path.open("a") as stream:
+            stream.write(json.dumps(extra_score) + "\n")
+    args = ["audit", "--run-dir", str(run), "--manifest-dir", str(inputs),
+            "--models", "speaker_only", "--max-audio-seconds", "30"]
+    monkeypatch.setattr(sys, "argv", args + ["--num-shards", "1", "--output-name", "audit.json"])
+    audit_voice_clone.main()
+    receipt = json.loads((run / "audit.json").read_text())["models"]["speaker_only"]
+    assert receipt["generation_rows"] == 2
+    assert receipt["score_rows"] == (2 if duration <= 30 else 1)
+    assert receipt["excluded_rows"] == (0 if duration <= 30 else 1)
+    monkeypatch.setattr(sys, "argv", args)
+    summarize_voice_clone.main()
+    summary = json.loads((run / "summary.json").read_text())[0]
+    assert summary["complete"] and summary["expected"] == 2
+    assert summary["mean"]["wer%"] == (49.5 if duration <= 30 else 0)
+    if duration > 30:
+        # Excluded audio must never be accepted as a scored short utterance.
+        with score_path.open("a") as stream:
+            stream.write(json.dumps(extra_score) + "\n")
+        monkeypatch.setattr(sys, "argv", args + ["--num-shards", "1"])
+        with pytest.raises(ValueError, match="Unknown/duplicate score"):
+            audit_voice_clone.main()

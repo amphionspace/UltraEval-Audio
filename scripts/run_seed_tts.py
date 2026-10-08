@@ -95,7 +95,10 @@ def main():
     parser.add_argument("--wait-for-lock", action="store_true", help="Wait for an earlier phase in the same run directory")
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--greedy", action="store_true", help="Disable both Talker and Code Predictor sampling")
+    parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.max_audio_seconds < 0:
+        parser.error("max-audio-seconds must be nonnegative")
     gpus = args.gpus.split(",")
     if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1:
         parser.error("gpus must be distinct numeric IDs; workers-per-gpu must be positive")
@@ -125,8 +128,16 @@ def main():
         # Physical devices may be reassigned; sample partitioning must stay fixed.
         if len(previous["gpus"]) != len(gpus) or {**previous, "gpus": gpus, "gpu_memory_gib": args.gpu_memory_gib} != state:
             raise ValueError("Run identity changed; resume with identical settings or use a new run directory")
+    policy_path = run / "duration_policy.json"
+    if policy_path.exists():
+        previous_cutoff = json.loads(policy_path.read_text())["max_audio_seconds"]
+        if previous_cutoff and (not args.max_audio_seconds or args.max_audio_seconds > previous_cutoff):
+            raise ValueError("Cannot relax the cutoff of a run containing capped outputs; use a new run directory")
+    policy_path.write_text(json.dumps({"max_audio_seconds": args.max_audio_seconds,
+        "exclusion": "independent per run; output duration strictly exceeds limit"}, indent=2))
     identity_path.write_text(json.dumps(state, indent=2))
     state["modes"] = args.modes
+    state["max_audio_seconds"] = args.max_audio_seconds
     env = offline_environment()
     logs = run / "logs"
     logs.mkdir(exist_ok=True)
@@ -155,7 +166,8 @@ def main():
                            "--model-path", str(model), "--conditioning", mode,
                            "--non-streaming", "--language-auto", "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
-                           "--gpu-memory-gib", str(args.gpu_memory_gib)]
+                           "--gpu-memory-gib", str(args.gpu_memory_gib),
+                           "--max-audio-seconds", str(args.max_audio_seconds)]
                     if args.greedy:
                         cmd.append("--greedy")
                     commands.append((f"{phase}-{mode}-{shard:02d}", cmd, gpus[shard % len(gpus)]))
@@ -172,7 +184,8 @@ def main():
                     commands.append((f"{phase}-score-{lang}-{shard:02d}",
                         [metric_python, "-u", "scripts/voice_clone_score.py", "--group", "seed",
                          "--language", lang, "--run-dir", str(output), "--workers", str(len(language_gpus)),
-                         "--shard", str(shard), "--models", *args.modes], gpu))
+                         "--shard", str(shard), "--max-audio-seconds", str(args.max_audio_seconds),
+                         "--models", *args.modes], gpu))
             # Each WavLM worker may need >18 GiB for a long generated waveform.
             if len(gpus) == 1:
                 for command in commands:
@@ -180,7 +193,8 @@ def main():
             else:
                 parallel(commands, env, logs)
             status(f"{phase}:audit")
-            common = ["--run-dir", str(output), "--manifest-dir", str(manifests), "--models", *args.modes]
+            common = ["--run-dir", str(output), "--manifest-dir", str(manifests),
+                      "--max-audio-seconds", str(args.max_audio_seconds), "--models", *args.modes]
             subprocess.run([metric_python, "scripts/summarize_voice_clone.py", *common], cwd=ROOT, env=env, check=True)
             audit = [metric_python, "scripts/audit_voice_clone.py", *common,
                      "--num-shards", str(shards), "--output-name", "audit.json"]

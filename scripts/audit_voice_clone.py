@@ -32,7 +32,10 @@ def main():
     parser.add_argument("--num-shards", type=int, default=8)
     parser.add_argument("--output-name")
     parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
+    parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.max_audio_seconds < 0:
+        parser.error("max-audio-seconds must be nonnegative")
     if args.output_name and Path(args.output_name).name != args.output_name:
         parser.error("output-name must be a filename, not a path")
     run_dir = ROOT / args.run_dir
@@ -74,13 +77,16 @@ def main():
             require(abs(info.duration - row["duration"]) < 1e-8, f"WAV duration: {path}")
             generated[key] = row
         require(set(generated) == set(canonical), f"Incomplete generation: {model} {len(generated)}")
+        excluded = {key for key, row in generated.items()
+                    if args.max_audio_seconds and row["duration"] > args.max_audio_seconds}
+        expected_scores = set(canonical) - excluded
         thread_modes = Counter()
         for file, row in records(model_dir.glob("scores-*.jsonl")):
             if row["status"] != "ok":
                 historical_errors["scoring"] += 1
                 continue
             key = (row["dataset"], row["index"])
-            require(key in generated and key not in scored, f"Unknown/duplicate score: {model} {key}")
+            require(key in expected_scores and key not in scored, f"Unknown/duplicate score: {model} {key}")
             require(row["model"] == model, f"Score model identity: {file} {key}")
             score = row["score"]
             pred = score["pred"]
@@ -92,7 +98,7 @@ def main():
             if row["dataset"].startswith("cv3"):
                 thread_modes[str(row.get("dnsmos_num_threads", "original_default"))] += 1
             scored[key] = row
-        require(set(scored) == set(canonical), f"Incomplete scores: {model} {len(scored)}")
+        require(set(scored) == expected_scores, f"Incomplete scores: {model} {len(scored)}")
         settings = sorted(model_dir.glob("settings-*.json"))
         require(len(settings) == args.num_shards, f"Settings count: {model}")
         for shard, file in enumerate(settings):
@@ -126,6 +132,9 @@ def main():
                             require(row.get("conditioning_verified") == {"speaker_embedding": True, "icl_calls": 0 if xvec else 1},
                                     f"Per-sample conditioning: {model} {key}")
         receipt["models"][model] = {"generation_rows": len(generated), "score_rows": len(scored),
+                                    "excluded_rows": len(excluded), "max_audio_seconds": args.max_audio_seconds,
+                                    "excluded_samples": [{"dataset": k[0], "index": k[1], "duration": generated[k]["duration"],
+                                                          "reason": "output_exceeds_duration_limit"} for k in sorted(excluded)],
                                     "wav_headers_checked": len(generated), "settings_checked": len(settings),
                                     "historical_error_records": dict(historical_errors),
                                     "dnsmos_thread_modes": dict(thread_modes)}

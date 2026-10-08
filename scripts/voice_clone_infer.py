@@ -44,7 +44,10 @@ def main():
     parser.add_argument("--fast", action=argparse.BooleanOptionalAction, default=True,
                         help="Breeze only: use its official accelerated runtime")
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
+    parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.max_audio_seconds < 0 or (args.max_audio_seconds and not args.model_path):
+        parser.error("duration cutoff requires a local Qwen checkpoint and a nonnegative duration")
     if Path(args.model).name != args.model or args.model in {".", ".."}:
         parser.error("model must be a directory name, not a path")
     if args.model_path and not args.conditioning:
@@ -74,10 +77,19 @@ def main():
     if receipt.exists():
         previous = json.loads(receipt.read_text())
         previous["arguments"].setdefault("greedy", False)
+        # A duration cutoff changes only the excluded tail, not retained short outputs.
+        previous_cutoff = previous["arguments"].get("max_audio_seconds", 0)
+        if previous_cutoff and (not args.max_audio_seconds or args.max_audio_seconds > previous_cutoff):
+            raise ValueError("Cannot relax a cutoff after capped outputs were generated")
+        previous["arguments"]["max_audio_seconds"] = args.max_audio_seconds
         # Allocation limits are operational settings, not generation parameters.
         previous["arguments"]["gpu_memory_gib"] = args.gpu_memory_gib
         if previous != identity:
             raise ValueError("Resume settings or input identity changed; use a new run directory")
+    if receipt.exists() and previous_cutoff != args.max_audio_seconds:
+        history = output_dir / f"invocation-before-duration-filter-{args.shard:02d}.json"
+        if not history.exists():
+            history.write_bytes(receipt.read_bytes())
     receipt.write_text(json.dumps(identity, indent=2))
     rows = []
     for file in manifests:
@@ -115,6 +127,13 @@ def main():
                       temperature=0.9, repetition_penalty=1.05,
                       subtalker_dosample=not args.greedy, subtalker_top_k=50,
                       subtalker_top_p=1.0, subtalker_temperature=0.9)
+        if args.max_audio_seconds:
+            codec = json.loads((model_dir / "speech_tokenizer/config.json").read_text())
+            frame_rate = codec["output_sample_rate"] / codec["decode_upsample_rate"]
+            # Qwen returns one fewer codec frame than generation steps. Allow a
+            # full frame beyond the threshold so a capped output is excluded,
+            # rather than silently scoring a truncated waveform as valid.
+            params["max_new_tokens"] = min(2048, int(args.max_audio_seconds * frame_rate) + 3)
         params["x_vector_only_mode"] = (args.conditioning == "speaker_only" if args.conditioning else args.model.endswith("-xvec_only"))
         params["non_streaming_mode"] = args.non_streaming
         icl_only = not args.model_path and args.model.endswith("-icl_only")
@@ -186,7 +205,13 @@ def main():
                                     guidance_scale=1.0, guidance_scale_ref=None, guidance_scale_ins=None)
             chunks = [chunk.audio for chunk in runtime.iter_audio_chunks(inputs, request_id=request["id"], seed=seed)]
             return [np.concatenate(chunks)], runtime.sample_rate
-    (output_dir / f"settings-{args.shard:02d}.json").write_text(json.dumps({**vars(args), "sampling": params,
+    settings_path = output_dir / f"settings-{args.shard:02d}.json"
+    if settings_path.exists() and args.max_audio_seconds:
+        history = output_dir / "settings-before-duration-filter"
+        history.mkdir(exist_ok=True)
+        if not (history / settings_path.name).exists():
+            (history / settings_path.name).write_bytes(settings_path.read_bytes())
+    settings_path.write_text(json.dumps({**vars(args), "sampling": params,
         "icl_only_ablation": args.model.endswith("-icl_only"),
         "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)}, indent=2))
     with journal.open("a", buffering=1) as log, torch.inference_mode():
@@ -213,7 +238,9 @@ def main():
                               "conditioning_verified": dict(paths_used),
                               "peak_gpu_allocated_gib": torch.cuda.max_memory_allocated() / 1024**3,
                               "peak_gpu_reserved_gib": torch.cuda.max_memory_reserved() / 1024**3,
-                              "gpu_budget_gib": effective_budget_gib}
+                              "gpu_budget_gib": effective_budget_gib,
+                              "generation_max_new_tokens": params["max_new_tokens"],
+                              "duration_excluded": bool(args.max_audio_seconds and len(wav) / sr > args.max_audio_seconds)}
                     log.write(json.dumps(result, ensure_ascii=False) + "\n")
                 print(f"{args.model} shard={args.shard} {start+len(batch)}/{len(rows)} batch_seconds={elapsed:.2f}", flush=True)
             except Exception:
