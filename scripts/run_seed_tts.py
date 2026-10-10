@@ -88,9 +88,11 @@ def main():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--gpus", default="0,1", help="Comma-separated allocated GPU IDs")
+    parser.add_argument("--score-gpus", help="Scoring GPU IDs; defaults to the inference GPUs")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--workers-per-gpu", type=int, default=1)
     parser.add_argument("--gpu-memory-gib", type=float, default=8, help="Per-inference-worker PyTorch allocation cap")
+    parser.add_argument("--gpu-reserve-gib", type=float, default=2, help="Free memory reserve for each inference worker")
     parser.add_argument("--smoke-only", action="store_true")
     parser.add_argument("--inference-only", action="store_true", help="Generate audio now; rerun without this flag to score and audit")
     parser.add_argument("--wait-for-lock", action="store_true", help="Wait for an earlier phase in the same run directory")
@@ -101,6 +103,11 @@ def main():
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
     gpus = args.gpus.split(",")
+    score_gpus = args.score_gpus.split(",") if args.score_gpus else gpus
+    if not all(g.isdigit() for g in score_gpus) or len(set(score_gpus)) != len(score_gpus):
+        parser.error("score-gpus must be distinct numeric IDs")
+    if args.gpu_memory_gib < 4 or args.gpu_reserve_gib < 0:
+        parser.error("gpu-memory-gib must be at least 4; gpu-reserve-gib must be nonnegative")
     if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1 or args.batch_size < 1:
         parser.error("gpus must be distinct numeric IDs; workers-per-gpu must be positive")
     run = (ROOT / args.run_dir).resolve()
@@ -122,6 +129,7 @@ def main():
     if digest(model / "model.safetensors") != report["weights_sha256"]:
         raise ValueError("Exported weights do not match export.json")
     state = {"checkpoint": report, "model_path": str(model), "gpus": gpus,
+             "score_gpus": score_gpus, "gpu_reserve_gib": args.gpu_reserve_gib,
              "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
     identity_path = run / "identity.json"
@@ -129,8 +137,11 @@ def main():
         previous = json.loads(identity_path.read_text())
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
+        previous.setdefault("score_gpus", previous["gpus"])
         # Physical devices may be reassigned; sample partitioning must stay fixed.
-        if len(previous["gpus"]) != len(gpus) or {**previous, "gpus": gpus, "gpu_memory_gib": args.gpu_memory_gib} != state:
+        if (len(previous["gpus"]) != len(gpus) or len(previous["score_gpus"]) != len(score_gpus)
+                or {**previous, "gpus": gpus, "score_gpus": score_gpus,
+                    "gpu_memory_gib": args.gpu_memory_gib, "gpu_reserve_gib": args.gpu_reserve_gib} != state):
             raise ValueError("Run identity changed; resume with identical settings or use a new run directory")
     policy_path = run / "duration_policy.json"
     if policy_path.exists():
@@ -171,6 +182,7 @@ def main():
                            "--non-streaming", "--language-auto", "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
                            "--gpu-memory-gib", str(args.gpu_memory_gib),
+                           "--gpu-reserve-gib", str(args.gpu_reserve_gib),
                            "--batch-size", str(args.batch_size),
                            "--max-audio-seconds", str(args.max_audio_seconds)]
                     if args.greedy:
@@ -182,7 +194,7 @@ def main():
             status(f"{phase}:scoring")
             commands = []
             for i, lang in enumerate(("en", "zh")):
-                language_gpus = (gpus[:max(1, len(gpus)//2)] if i == 0 else gpus[max(1, len(gpus)//2):]) or gpus
+                language_gpus = (score_gpus[:max(1, len(score_gpus)//2)] if i == 0 else score_gpus[max(1, len(score_gpus)//2):]) or score_gpus
                 if phase == "smoke":
                     language_gpus = language_gpus[:1]
                 for shard, gpu in enumerate(language_gpus):
@@ -192,7 +204,7 @@ def main():
                          "--shard", str(shard), "--max-audio-seconds", str(args.max_audio_seconds),
                          "--models", *args.modes], gpu))
             # Each WavLM worker may need >18 GiB for a long generated waveform.
-            if len(gpus) == 1:
+            if len(score_gpus) == 1:
                 for command in commands:
                     parallel([command], env, logs)
             else:

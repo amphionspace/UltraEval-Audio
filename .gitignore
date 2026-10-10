@@ -15,6 +15,7 @@ envs/
 env/
 tests/*
 !tests/test_seed_tts_audit.py
+!tests/test_seed_tts_runner.py
 !tests/test_isolate_conda.py
 *.DS_Store
 .DS_Store

@@ -65,7 +65,9 @@ def main():
     parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
     parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
     parser.add_argument("--gpu-memory-gib", type=float, default=0,
-                        help="Maximum PyTorch allocator budget; clamp to free memory minus a 2 GiB reserve")
+                        help="Maximum PyTorch allocator budget; clamp to free memory minus the reserve")
+    parser.add_argument("--gpu-reserve-gib", type=float, default=2,
+                        help="Free GPU memory to leave outside the allocator budget")
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -75,6 +77,8 @@ def main():
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.gpu_memory_gib < 0 or args.gpu_reserve_gib < 0:
+        parser.error("GPU memory budget and reserve must be nonnegative")
     if args.max_audio_seconds < 0 or (args.max_audio_seconds and not args.model_path):
         parser.error("duration cutoff requires a local Qwen checkpoint and a nonnegative duration")
     if Path(args.model).name != args.model or args.model in {".", ".."}:
@@ -119,6 +123,7 @@ def main():
         previous["arguments"]["max_audio_seconds"] = args.max_audio_seconds
         # Allocation limits are operational settings, not generation parameters.
         previous["arguments"]["gpu_memory_gib"] = args.gpu_memory_gib
+        previous["arguments"]["gpu_reserve_gib"] = args.gpu_reserve_gib
         if previous != identity:
             raise ValueError("Resume settings or input identity changed; use a new run directory")
     if receipt.exists() and previous_cutoff != args.max_audio_seconds:
@@ -146,9 +151,9 @@ def main():
     effective_budget_gib = None
     if args.gpu_memory_gib:
         free, total = torch.cuda.mem_get_info(0)
-        budget = min(args.gpu_memory_gib * 1024**3, free - 2 * 1024**3)
+        budget = min(args.gpu_memory_gib * 1024**3, free - args.gpu_reserve_gib * 1024**3)
         if budget < 4 * 1024**3:
-            raise RuntimeError(f"Only {free / 1024**3:.2f} GiB free; need at least 4 GiB for inference plus 2 GiB reserve")
+            raise RuntimeError(f"Only {free / 1024**3:.2f} GiB free; need at least 4 GiB for inference plus {args.gpu_reserve_gib} GiB reserve")
         torch.cuda.set_per_process_memory_fraction(budget / total, 0)
         effective_budget_gib = budget / 1024**3
         print(f"Requested GPU budget={args.gpu_memory_gib} GiB; effective={effective_budget_gib:.2f} GiB", flush=True)
