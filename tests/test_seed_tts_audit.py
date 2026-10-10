@@ -182,3 +182,88 @@ def test_duration_filter_preserves_coverage_and_threshold(tmp_path, monkeypatch,
         monkeypatch.setattr(sys, "argv", args + ["--num-shards", "1"])
         with pytest.raises(ValueError, match="Unknown/duplicate score"):
             audit_voice_clone.main()
+
+
+@pytest.mark.parametrize("corruption", [None, "speaker", "missing_icl", "wrong_mode"])
+def test_local_icl_only_audit(tmp_path, monkeypatch, corruption):
+    inputs, run, model, row = setup_run(tmp_path)
+    row["conditioning_verified"] = {"speaker_embedding": False, "icl_calls": 1}
+    cfg_path = model / "settings-00.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg.update(conditioning="icl_only", icl_only_ablation=True)
+    cfg["sampling"]["x_vector_only_mode"] = False
+    if corruption == "speaker":
+        row["conditioning_verified"]["speaker_embedding"] = True
+    elif corruption == "missing_icl":
+        row["conditioning_verified"]["icl_calls"] = 0
+    elif corruption == "wrong_mode":
+        cfg["conditioning"] = "speaker_icl"
+    cfg_path.write_text(json.dumps(cfg))
+    (model / "inference-00.jsonl").write_text(json.dumps(row) + "\n")
+    (model / "conditioning-verified-00.json").write_text(json.dumps({
+        "model": "speaker_only", "batch_size": 1,
+        "speaker_embedding": False, "icl_calls": 1}))
+    monkeypatch.setattr(sys, "argv", ["audit", "--run-dir", str(run),
+        "--manifest-dir", str(inputs), "--models", "speaker_only", "--num-shards", "1"])
+    if corruption:
+        with pytest.raises(ValueError):
+            audit_voice_clone.main()
+    else:
+        audit_voice_clone.main()
+
+
+@pytest.mark.parametrize("mode", ["speaker_only", "speaker_icl"])
+def test_no_speaker_export_rejects_speaker_modes(tmp_path, monkeypatch, mode):
+    from scripts import run_seed_tts
+
+    model = tmp_path / "export"
+    model.mkdir()
+    (model / "export.json").write_text(json.dumps({"use_speaker_embedding": False}))
+    monkeypatch.setattr(sys, "argv", ["pipeline", "--model-path", str(model),
+        "--run-dir", str(tmp_path / "run"), "--modes", mode])
+    with pytest.raises(ValueError, match="No-speaker checkpoints require"):
+        run_seed_tts.main()
+
+
+@pytest.mark.parametrize("corruption", [None, "seed", "tail_size", "icl_count"])
+def test_batched_icl_audit_checks_seed_and_tail(tmp_path, monkeypatch, corruption):
+    inputs, run, model, template = setup_run(tmp_path)
+    manifest_path = inputs / (template["dataset"] + ".jsonl")
+    sample = json.loads(manifest_path.read_text())
+    raw = "".join(json.dumps({**sample, "index": i}) + "\n" for i in range(5))
+    manifest_path.write_text(raw)
+    (inputs / "manifest_metadata.json").write_text(json.dumps({template["dataset"]: {
+        "count": 5, "sha256": hashlib.sha256(raw.encode()).hexdigest()}}))
+    rows, scores = [], []
+    for i in range(5):
+        audio = model / template["dataset"] / f"{i:06d}.wav"
+        sf.write(audio, np.zeros(2400), 24000, subtype="PCM_16")
+        size = 4 if i < 4 else 1
+        row = {**template, "index": i, "audio": str(audio), "seed": 42 if i < 4 else 46,
+               "batch_size": size, "conditioning_verified": {"speaker_embedding": False, "icl_calls": size}}
+        if corruption == "seed" and i == 1:
+            row["seed"] = 43
+        if corruption == "tail_size" and i == 4:
+            row["batch_size"] = 4
+        if corruption == "icl_count" and i == 1:
+            row["conditioning_verified"]["icl_calls"] = 1
+        rows.append(row)
+        scores.append({"model": "speaker_only", "dataset": template["dataset"], "index": i,
+                       "status": "ok", "score": {"pred": str(audio), "ref": sample["prompt_audio"],
+                       "label_text": sample["text"], "wer%": 0, "simo": 0.75}})
+    (model / "inference-00.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (model / "scores-seed-en.jsonl").write_text("".join(json.dumps(r) + "\n" for r in scores))
+    cfg_path = model / "settings-00.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg.update(batch_size=4, conditioning="icl_only", icl_only_ablation=True)
+    cfg["sampling"]["x_vector_only_mode"] = False
+    cfg_path.write_text(json.dumps(cfg))
+    (model / "conditioning-verified-00.json").write_text(json.dumps({
+        "model": "speaker_only", "batch_size": 1, "speaker_embedding": False, "icl_calls": 1}))
+    monkeypatch.setattr(sys, "argv", ["audit", "--run-dir", str(run), "--manifest-dir", str(inputs),
+        "--models", "speaker_only", "--num-shards", "1", "--batch-size", "4"])
+    if corruption:
+        with pytest.raises(ValueError):
+            audit_voice_clone.main()
+    else:
+        audit_voice_clone.main()

@@ -30,7 +30,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="Registered model name or local model output label")
     parser.add_argument("--model-path", help="Exported local Qwen3-TTS checkpoint")
-    parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl"])
+    parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl", "icl_only"])
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
     parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
     parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
@@ -58,8 +58,6 @@ def main():
         parser.error("greedy is supported only for Qwen inference")
     if args.num_shards < 1 or not 0 <= args.shard < args.num_shards or args.batch_size < 1 or args.limit < 0:
         parser.error("invalid shard, batch size or limit")
-    if args.model_path and args.batch_size != 1:
-        parser.error("local checkpoint comparisons require batch size 1 for per-sample seeds")
     torch.set_num_threads(2)
     model_dir = (ROOT / args.model_path if args.model_path else ROOT / "init_model" / MODEL_IDS[args.model]).resolve()
     output_dir = ROOT / args.run_dir / args.model
@@ -73,6 +71,12 @@ def main():
                 "manifests": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in manifests}}
     if args.model_path:
         identity["export"] = json.loads((model_dir / "export.json").read_text())
+        exported_speaker = identity["export"].get("use_speaker_embedding", True)
+        model_speaker = json.loads((model_dir / "config.json").read_text())["talker_config"].get("lm_tts_use_speaker_embedding", True)
+        if exported_speaker != model_speaker:
+            raise ValueError("Export and model config disagree on speaker conditioning")
+        if not exported_speaker and args.conditioning != "icl_only":
+            raise ValueError("No-speaker checkpoints require --conditioning icl_only")
     receipt = output_dir / f"invocation-{args.shard:02d}.json"
     if receipt.exists():
         previous = json.loads(receipt.read_text())
@@ -104,9 +108,9 @@ def main():
             row = json.loads(line)
             if row.get("status") == "ok" and Path(row["audio"]).exists():
                 done[(row["dataset"], row["index"])] = row
-    rows = [r for r in rows if (r["dataset"], r["index"]) not in done]
-    print(f"model={args.model} shard={args.shard} remaining={len(rows)} CUDA_VISIBLE_DEVICES={os.getenv('CUDA_VISIBLE_DEVICES')}", flush=True)
-    if not rows:
+    remaining = sum((r["dataset"], r["index"]) not in done for r in rows)
+    print(f"model={args.model} shard={args.shard} remaining={remaining} CUDA_VISIBLE_DEVICES={os.getenv('CUDA_VISIBLE_DEVICES')}", flush=True)
+    if not remaining:
         return
     effective_budget_gib = None
     if args.gpu_memory_gib:
@@ -136,7 +140,7 @@ def main():
             params["max_new_tokens"] = min(2048, int(args.max_audio_seconds * frame_rate) + 3)
         params["x_vector_only_mode"] = (args.conditioning == "speaker_only" if args.conditioning else args.model.endswith("-xvec_only"))
         params["non_streaming_mode"] = args.non_streaming
-        icl_only = not args.model_path and args.model.endswith("-icl_only")
+        icl_only = args.conditioning == "icl_only" if args.model_path else args.model.endswith("-icl_only")
         paths_used = {"speaker_embedding": False, "icl_calls": 0}
         original_speaker_prompt = model.model.generate_speaker_prompt
         original_icl_prompt = model.model.generate_icl_prompt
@@ -152,6 +156,10 @@ def main():
             paths_used["icl_calls"] += 1
             return original_icl_prompt(*positional, **keywords)
 
+        if icl_only:
+            # The wrapper stores this optional value, but our no-speaker branch
+            # never consumes it. Avoid running the unused speaker encoder.
+            model.model.extract_speaker_embedding = lambda audio, sr: None
         model.model.generate_speaker_prompt = speaker_prompt
         model.model.generate_icl_prompt = icl_prompt
 
@@ -212,11 +220,16 @@ def main():
         if not (history / settings_path.name).exists():
             (history / settings_path.name).write_bytes(settings_path.read_bytes())
     settings_path.write_text(json.dumps({**vars(args), "sampling": params,
-        "icl_only_ablation": args.model.endswith("-icl_only"),
+        "icl_only_ablation": args.conditioning == "icl_only" if args.model_path else args.model.endswith("-icl_only"),
         "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)}, indent=2))
     with journal.open("a", buffering=1) as log, torch.inference_mode():
         for start in range(0, len(rows), args.batch_size):
             batch = rows[start:start + args.batch_size]
+            # Preserve original batch membership and seed when resuming. If a
+            # journal write was interrupted, regenerate the same batch but only
+            # write missing rows; never regroup the remaining samples.
+            if all((r["dataset"], r["index"]) in done for r in batch):
+                continue
             seed = 42 + batch[0]["index"]
             try:
                 torch.cuda.synchronize()
@@ -227,6 +240,8 @@ def main():
                 if len(wavs) != len(batch):
                     raise ValueError("Generation output count differs from input count")
                 for row, wav in zip(batch, wavs):
+                    if (row["dataset"], row["index"]) in done:
+                        continue
                     if len(wav) == 0 or not np.isfinite(wav).all():
                         raise ValueError("Empty or non-finite audio")
                     path = output_dir / row["dataset"] / f"{row['index']:06d}.wav"

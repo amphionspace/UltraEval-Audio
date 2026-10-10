@@ -1,4 +1,4 @@
-"""Evaluate one exported checkpoint with speaker-only and speaker+ICL conditioning."""
+"""Evaluate one exported checkpoint with speaker-only, speaker+ICL, or codec/text-only ICL conditioning."""
 import argparse
 import fcntl
 import hashlib
@@ -10,7 +10,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-MODES = ("speaker_only", "speaker_icl")
+MODES = ("speaker_only", "speaker_icl", "icl_only")
 
 
 def digest(path):
@@ -88,19 +88,20 @@ def main():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--gpus", default="0,1", help="Comma-separated allocated GPU IDs")
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--workers-per-gpu", type=int, default=1)
     parser.add_argument("--gpu-memory-gib", type=float, default=8, help="Per-inference-worker PyTorch allocation cap")
     parser.add_argument("--smoke-only", action="store_true")
     parser.add_argument("--inference-only", action="store_true", help="Generate audio now; rerun without this flag to score and audit")
     parser.add_argument("--wait-for-lock", action="store_true", help="Wait for an earlier phase in the same run directory")
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=["speaker_only", "speaker_icl"])
     parser.add_argument("--greedy", action="store_true", help="Disable both Talker and Code Predictor sampling")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
     gpus = args.gpus.split(",")
-    if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1:
+    if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1 or args.batch_size < 1:
         parser.error("gpus must be distinct numeric IDs; workers-per-gpu must be positive")
     run = (ROOT / args.run_dir).resolve()
     model = (ROOT / args.model_path).resolve()
@@ -116,15 +117,18 @@ def main():
                 raise
             time.sleep(5)
     report = json.loads((model / "export.json").read_text())
+    if report.get("use_speaker_embedding") is False and args.modes != ["icl_only"]:
+        raise ValueError("No-speaker checkpoints require --modes icl_only")
     if digest(model / "model.safetensors") != report["weights_sha256"]:
         raise ValueError("Exported weights do not match export.json")
     state = {"checkpoint": report, "model_path": str(model), "gpus": gpus,
              "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
-             "greedy": args.greedy, "state": "starting"}
+             "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
     identity_path = run / "identity.json"
     if identity_path.exists():
         previous = json.loads(identity_path.read_text())
         previous.setdefault("greedy", False)
+        previous.setdefault("batch_size", 1)
         # Physical devices may be reassigned; sample partitioning must stay fixed.
         if len(previous["gpus"]) != len(gpus) or {**previous, "gpus": gpus, "gpu_memory_gib": args.gpu_memory_gib} != state:
             raise ValueError("Run identity changed; resume with identical settings or use a new run directory")
@@ -167,6 +171,7 @@ def main():
                            "--non-streaming", "--language-auto", "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
                            "--gpu-memory-gib", str(args.gpu_memory_gib),
+                           "--batch-size", str(args.batch_size),
                            "--max-audio-seconds", str(args.max_audio_seconds)]
                     if args.greedy:
                         cmd.append("--greedy")
@@ -197,7 +202,7 @@ def main():
                       "--max-audio-seconds", str(args.max_audio_seconds), "--models", *args.modes]
             subprocess.run([metric_python, "scripts/summarize_voice_clone.py", *common], cwd=ROOT, env=env, check=True)
             audit = [metric_python, "scripts/audit_voice_clone.py", *common,
-                     "--num-shards", str(shards), "--output-name", "audit.json"]
+                     "--num-shards", str(shards), "--batch-size", str(args.batch_size), "--output-name", "audit.json"]
             if args.greedy:
                 audit.append("--expect-greedy")
             subprocess.run(audit, cwd=ROOT, env=env, check=True)

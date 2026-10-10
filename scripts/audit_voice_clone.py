@@ -29,11 +29,14 @@ def main():
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     parser.add_argument("--models", nargs="+", default=list(MODELS))
     parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-shards", type=int, default=8)
     parser.add_argument("--output-name")
     parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("batch-size must be positive")
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
     if args.output_name and Path(args.output_name).name != args.output_name:
@@ -51,6 +54,13 @@ def main():
             key = (dataset, row["index"])
             require(key not in canonical, f"Duplicate manifest key: {key}")
             canonical[key] = row
+    expected_batches = {}
+    for shard in range(args.num_shards):
+        keys = [key for key in sorted(canonical) if key[1] % args.num_shards == shard]
+        for start in range(0, len(keys), args.batch_size):
+            batch = keys[start:start + args.batch_size]
+            for key in batch:
+                expected_batches[key] = (42 + batch[0][1], len(batch))
     receipt = {"scope": args.models, "all_seven_configurations": set(args.models) == set(MODELS),
                "samples_per_configuration": len(canonical), "models": {}}
     for model in args.models:
@@ -69,7 +79,7 @@ def main():
             path = model_dir / row["dataset"] / f"{row['index']:06d}.wav"
             require(Path(row["audio"]).resolve() == path.resolve(), f"Audio path: {model} {key}")
             require(row["index"] % args.num_shards == int(file.stem.split("-")[-1]), f"Inference shard: {file} {key}")
-            require(row["seed"] == 42 + row["index"] and row["batch_size"] == 1,
+            require((row["seed"], row["batch_size"]) == expected_batches[key],
                     f"Seed/batch: {model} {key}")
             info = sf.info(path)
             require(info.samplerate == row["sample_rate"] == 24000 and info.channels == 1
@@ -104,20 +114,20 @@ def main():
         for shard, file in enumerate(settings):
             cfg = json.loads(file.read_text())
             require(cfg["model"] == model and cfg["shard"] == shard and cfg["num_shards"] == args.num_shards
-                    and cfg["batch_size"] == 1 and cfg["limit"] == 0, f"Settings identity: {file}")
+                    and cfg["batch_size"] == args.batch_size and cfg["limit"] == 0, f"Settings identity: {file}")
             if model == "breeze-tts-2":
                 require(cfg["fast"] and cfg["sampling"]["warmup_freeze_after_warmup"] is False,
                         f"Breeze graph settings: {file}")
             else:
                 local = bool(cfg.get("model_path"))
                 xvec = cfg.get("conditioning") == "speaker_only" if local else model.endswith("xvec_only")
-                icl_only = not local and model.endswith("icl_only")
+                icl_only = cfg.get("conditioning") == "icl_only" if local else model.endswith("icl_only")
                 require(cfg["icl_only_ablation"] == icl_only, f"Ablation flag: {file}")
                 require(cfg["sampling"]["x_vector_only_mode"] == xvec, f"xvec flag: {file}")
                 check = json.loads((model_dir / f"conditioning-verified-{shard:02d}.json").read_text())
-                require(check["model"] == model and check["batch_size"] == 1
+                require(check["model"] == model and 1 <= check["batch_size"] <= args.batch_size
                         and check["speaker_embedding"] == (not icl_only)
-                        and check["icl_calls"] == (0 if xvec else 1),
+                        and check["icl_calls"] == (0 if xvec else check["batch_size"]),
                         f"Runtime conditioning: {model} shard {shard}")
                 if local:
                     greedy = cfg.get("greedy", False)
@@ -129,7 +139,7 @@ def main():
                     require(cfg["non_streaming"] and cfg["language_auto"], f"Training protocol: {file}")
                     for key, row in generated.items():
                         if row["index"] % args.num_shards == shard:
-                            require(row.get("conditioning_verified") == {"speaker_embedding": True, "icl_calls": 0 if xvec else 1},
+                            require(row.get("conditioning_verified") == {"speaker_embedding": not icl_only, "icl_calls": 0 if xvec else row["batch_size"]},
                                     f"Per-sample conditioning: {model} {key}")
         receipt["models"][model] = {"generation_rows": len(generated), "score_rows": len(scored),
                                     "excluded_rows": len(excluded), "max_audio_seconds": args.max_audio_seconds,
