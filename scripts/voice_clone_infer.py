@@ -26,6 +26,35 @@ MODEL_IDS = {"qwen3-tts-0.6b-base": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
              "breeze-tts-2": "BreezeBlue/Breeze-TTS-2"}
 
 
+def generate_local_batch(model, batch, params, language_auto):
+    """Batch the language model while keeping reference encoding and audio decoding per sample."""
+    prompts = [model.create_voice_clone_prompt(
+        ref_audio=row["prompt_audio"],
+        ref_text=None if params["x_vector_only_mode"] else row["prompt_text"],
+        x_vector_only_mode=params["x_vector_only_mode"])[0] for row in batch]
+    tokenizer = model.model.speech_tokenizer
+    original_decode = tokenizer.decode
+
+    def decode_individually(encoded):
+        wavs, sample_rate = [], None
+        for item in encoded:
+            values, rate = original_decode([item])
+            if len(values) != 1 or (sample_rate is not None and sample_rate != rate):
+                raise ValueError("Inconsistent per-sample codec decoding")
+            wavs.append(values[0])
+            sample_rate = rate
+        return wavs, sample_rate
+
+    tokenizer.decode = decode_individually
+    try:
+        return model.generate_voice_clone(
+            text=[r["text"] for r in batch],
+            language=["Auto" if language_auto else ("English" if r["language"] == "en" else "Chinese") for r in batch],
+            voice_clone_prompt=prompts, **params)
+    finally:
+        tokenizer.decode = original_decode
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="Registered model name or local model output label")
@@ -77,6 +106,8 @@ def main():
             raise ValueError("Export and model config disagree on speaker conditioning")
         if not exported_speaker and args.conditioning != "icl_only":
             raise ValueError("No-speaker checkpoints require --conditioning icl_only")
+    if args.model_path and args.batch_size > 1:
+        identity["codec_batch_size"] = 1
     receipt = output_dir / f"invocation-{args.shard:02d}.json"
     if receipt.exists():
         previous = json.loads(receipt.read_text())
@@ -168,12 +199,15 @@ def main():
             torch.cuda.manual_seed_all(seed)
             paths_used["speaker_embedding"] = None
             paths_used["icl_calls"] = 0
-            result = model.generate_voice_clone(
-                text=[r["text"] for r in batch],
-                language=["Auto" if args.language_auto else ("English" if r["language"] == "en" else "Chinese") for r in batch],
-                ref_audio=[r["prompt_audio"] for r in batch],
-                ref_text=None if params["x_vector_only_mode"] else [r["prompt_text"] for r in batch],
-                **params)
+            if args.model_path and args.batch_size > 1:
+                result = generate_local_batch(model, batch, params, args.language_auto)
+            else:
+                result = model.generate_voice_clone(
+                    text=[r["text"] for r in batch],
+                    language=["Auto" if args.language_auto else ("English" if r["language"] == "en" else "Chinese") for r in batch],
+                    ref_audio=[r["prompt_audio"] for r in batch],
+                    ref_text=None if params["x_vector_only_mode"] else [r["prompt_text"] for r in batch],
+                    **params)
             assert paths_used["speaker_embedding"] == (not icl_only), paths_used
             assert paths_used["icl_calls"] == (0 if params["x_vector_only_mode"] else len(batch)), paths_used
             validation = {**paths_used, "batch_size": len(batch), "model": args.model}
@@ -220,6 +254,7 @@ def main():
         if not (history / settings_path.name).exists():
             (history / settings_path.name).write_bytes(settings_path.read_bytes())
     settings_path.write_text(json.dumps({**vars(args), "sampling": params,
+        "codec_batch_size": 1 if args.model_path else args.batch_size,
         "icl_only_ablation": args.conditioning == "icl_only" if args.model_path else args.model.endswith("-icl_only"),
         "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)}, indent=2))
     with journal.open("a", buffering=1) as log, torch.inference_mode():

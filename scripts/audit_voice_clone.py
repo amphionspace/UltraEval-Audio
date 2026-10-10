@@ -130,6 +130,8 @@ def main():
                         and check["icl_calls"] == (0 if xvec else check["batch_size"]),
                         f"Runtime conditioning: {model} shard {shard}")
                 if local:
+                    if args.batch_size > 1:
+                        require(cfg.get("codec_batch_size") == 1, f"Batched reference/audio codec: {file}")
                     greedy = cfg.get("greedy", False)
                     if args.expect_greedy:
                         require(greedy, f"Expected greedy inference: {file}")

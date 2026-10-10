@@ -255,7 +255,7 @@ def test_batched_icl_audit_checks_seed_and_tail(tmp_path, monkeypatch, corruptio
     (model / "scores-seed-en.jsonl").write_text("".join(json.dumps(r) + "\n" for r in scores))
     cfg_path = model / "settings-00.json"
     cfg = json.loads(cfg_path.read_text())
-    cfg.update(batch_size=4, conditioning="icl_only", icl_only_ablation=True)
+    cfg.update(batch_size=4, conditioning="icl_only", icl_only_ablation=True, codec_batch_size=1)
     cfg["sampling"]["x_vector_only_mode"] = False
     cfg_path.write_text(json.dumps(cfg))
     (model / "conditioning-verified-00.json").write_text(json.dumps({
@@ -267,3 +267,38 @@ def test_batched_icl_audit_checks_seed_and_tail(tmp_path, monkeypatch, corruptio
             audit_voice_clone.main()
     else:
         audit_voice_clone.main()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_local_batch_keeps_codec_independent_and_restores_decoder(fail):
+    from scripts.voice_clone_infer import generate_local_batch
+
+    encoded, decoded = [], []
+    def decode(items):
+        assert len(items) == 1
+        decoded.append(items[0])
+        return [items[0]["audio_codes"]], 24000
+    tokenizer = types.SimpleNamespace(decode=decode)
+    def prompt(**kwargs):
+        assert isinstance(kwargs["ref_audio"], str)
+        encoded.append(kwargs["ref_audio"])
+        return [{"audio_codes": kwargs["ref_audio"], "text": kwargs["ref_text"]}]
+    def generate(**kwargs):
+        assert kwargs["text"] == ["target 0", "target 1"]
+        assert kwargs["language"] == ["Auto", "Auto"]
+        assert [p["text"] for p in kwargs["voice_clone_prompt"]] == ["ref 0", "ref 1"]
+        result = tokenizer.decode(kwargs["voice_clone_prompt"])
+        if fail:
+            raise RuntimeError("generation failed")
+        return result
+    model = types.SimpleNamespace(model=types.SimpleNamespace(speech_tokenizer=tokenizer),
+        create_voice_clone_prompt=prompt, generate_voice_clone=generate)
+    batch = [{"text": f"target {i}", "prompt_text": f"ref {i}", "prompt_audio": f"audio {i}",
+              "language": "en"} for i in range(2)]
+    if fail:
+        with pytest.raises(RuntimeError, match="generation failed"):
+            generate_local_batch(model, batch, {"x_vector_only_mode": False}, True)
+    else:
+        assert generate_local_batch(model, batch, {"x_vector_only_mode": False}, True) == (["audio 0", "audio 1"], 24000)
+    assert encoded == ["audio 0", "audio 1"] and len(decoded) == 2
+    assert tokenizer.decode is decode
