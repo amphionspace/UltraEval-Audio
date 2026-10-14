@@ -56,7 +56,7 @@ class Paraformer(OfflineModel):
                             self.process.stdin.flush()
                             return result[len(prefix) :]
                         elif result.startswith("Error:"):
-                            raise RuntimeError("FireRedASR failed: {}".format(result))
+                            raise RuntimeError("Paraformer failed: {}".format(result))
                         else:
                             logger.info(result)
                 if read is self.process.stderr:

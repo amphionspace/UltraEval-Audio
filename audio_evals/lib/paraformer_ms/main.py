@@ -5,12 +5,12 @@ import sys
 import tempfile
 
 import soundfile
-from funasr import AutoModel
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
 from audio_evals.gpu_budget import configure_cuda_budget
 
 
 def get_model(path, is_streaming=False):
+    from funasr import AutoModel
+
     model_cfg = {
         # "vad_model": "fsmn-vad",
         # "punc_model": "ct-punc-c",
@@ -22,7 +22,16 @@ def get_model(path, is_streaming=False):
     return model
 
 
+def transcribe(model, audio):
+    results = model.generate(input=audio, batch_size_s=300)
+    # SeACo returns no hypotheses when its predicted token length is zero.
+    # Keep the sample: an empty transcript counts as deletions in CER/WER.
+    return "" if results == [] else results[0]["text"]
+
+
 if __name__ == "__main__":
+    from funasr.utils.postprocess_utils import rich_transcription_postprocess
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--path", type=str, required=True, help="Path to checkpoint file"
@@ -99,15 +108,10 @@ if __name__ == "__main__":
                         audio, sr = soundfile.read(wav_file.name)
                         for start in range(0, len(audio), config.chunk_size * sr):
                             chunk = audio[start : start + config.chunk_size * sr]
-                            res = m.generate(input=chunk, batch_size_s=300)
-                            if len(res) > 0:
-                                text = res[0]["text"]
-                                texts.append(text.strip())
+                            texts.append(transcribe(m, chunk).strip())
                         transcription = "".join(t for t in texts if t)
                     else:
-                        transcription = m.generate(
-                            input=wav_file.name, batch_size_s=300
-                        )[0]["text"]
+                        transcription = transcribe(m, wav_file.name)
                 retry = 3
                 while retry:
                     retry -= 1
