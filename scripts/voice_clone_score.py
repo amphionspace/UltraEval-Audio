@@ -120,11 +120,14 @@ def main():
         suffix = "" if args.shard is None else f"-{args.shard:02d}"
         target = model_dir / f"scores-{args.group}-{args.language}{suffix}.jsonl"
         done = set()
-        previous_files = {target, model_dir / f"scores-{args.group}-{args.language}.jsonl"}
+        # Reuse successful scores even when the worker count changes.
+        previous_files = set(model_dir.glob(f"scores-{args.group}-{args.language}*.jsonl"))
         for previous in previous_files:
             if not previous.exists():
                 continue
-            for line in previous.read_text().splitlines():
+            for line in previous.read_text().splitlines(keepends=True):
+                if not line.endswith("\n"):
+                    continue  # Another shard may currently be appending its last record.
                 r = json.loads(line)
                 if r.get("status") == "ok":
                     done.add((r["dataset"], r["index"]))

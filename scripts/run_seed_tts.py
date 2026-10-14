@@ -91,6 +91,7 @@ def main():
     parser.add_argument("--score-gpus", help="Scoring GPU IDs; defaults to the inference GPUs")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--workers-per-gpu", type=int, default=1)
+    parser.add_argument("--score-workers-per-gpu", type=int, default=1)
     parser.add_argument("--gpu-memory-gib", type=float, default=8, help="Per-inference-worker PyTorch allocation cap")
     parser.add_argument("--gpu-reserve-gib", type=float, default=2, help="Free memory reserve for each inference worker")
     parser.add_argument("--smoke-only", action="store_true")
@@ -104,8 +105,8 @@ def main():
         parser.error("max-audio-seconds must be nonnegative")
     gpus = args.gpus.split(",")
     score_gpus = args.score_gpus.split(",") if args.score_gpus else gpus
-    if not all(g.isdigit() for g in score_gpus) or len(set(score_gpus)) != len(score_gpus):
-        parser.error("score-gpus must be distinct numeric IDs")
+    if not all(g.isdigit() for g in score_gpus) or len(set(score_gpus)) != len(score_gpus) or args.score_workers_per_gpu < 1:
+        parser.error("score-gpus must be distinct numeric IDs; score-workers-per-gpu must be positive")
     if args.gpu_memory_gib < 4 or args.gpu_reserve_gib < 0:
         parser.error("gpu-memory-gib must be at least 4; gpu-reserve-gib must be nonnegative")
     if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1 or args.batch_size < 1:
@@ -129,7 +130,7 @@ def main():
     if digest(model / "model.safetensors") != report["weights_sha256"]:
         raise ValueError("Exported weights do not match export.json")
     state = {"checkpoint": report, "model_path": str(model), "gpus": gpus,
-             "score_gpus": score_gpus, "gpu_reserve_gib": args.gpu_reserve_gib,
+             "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
              "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
     identity_path = run / "identity.json"
@@ -138,10 +139,10 @@ def main():
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
         previous.setdefault("score_gpus", previous["gpus"])
-        # Physical devices may be reassigned; sample partitioning must stay fixed.
-        if (len(previous["gpus"]) != len(gpus) or len(previous["score_gpus"]) != len(score_gpus)
+        # Inference partitioning fixes sampling seeds; scoring can repartition saved audio.
+        if (len(previous["gpus"]) != len(gpus)
                 or {**previous, "gpus": gpus, "score_gpus": score_gpus,
-                    "gpu_memory_gib": args.gpu_memory_gib, "gpu_reserve_gib": args.gpu_reserve_gib} != state):
+                    "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib, "gpu_reserve_gib": args.gpu_reserve_gib} != state):
             raise ValueError("Run identity changed; resume with identical settings or use a new run directory")
     policy_path = run / "duration_policy.json"
     if policy_path.exists():
@@ -197,6 +198,8 @@ def main():
                 language_gpus = (score_gpus[:max(1, len(score_gpus)//2)] if i == 0 else score_gpus[max(1, len(score_gpus)//2):]) or score_gpus
                 if phase == "smoke":
                     language_gpus = language_gpus[:1]
+                else:
+                    language_gpus = language_gpus * args.score_workers_per_gpu
                 for shard, gpu in enumerate(language_gpus):
                     commands.append((f"{phase}-score-{lang}-{shard:02d}",
                         [metric_python, "-u", "scripts/voice_clone_score.py", "--group", "seed",

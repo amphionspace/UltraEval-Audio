@@ -25,10 +25,10 @@ def runner(tmp_path, monkeypatch):
     monkeypatch.setattr(run_seed_tts, "parallel", lambda batch, *_: commands.extend(batch))
     monkeypatch.setattr(run_seed_tts.subprocess, "run", lambda *_, **__: None)
 
-    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7"):
+    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1):
         monkeypatch.setattr(sys, "argv", ["runner", "--model-path", "model",
             "--run-dir", "run", "--modes", "icl_only", "--gpus", gpus,
-            "--score-gpus", score_gpus, "--gpu-memory-gib", "4", "--gpu-reserve-gib", "0.5"])
+            "--score-gpus", score_gpus, "--score-workers-per-gpu", str(score_workers), "--gpu-memory-gib", "4", "--gpu-reserve-gib", "0.5"])
         run_seed_tts.main()
         return commands
 
@@ -52,7 +52,6 @@ def test_eight_inference_workers_use_separate_scoring_devices(runner):
 
 @pytest.mark.parametrize("gpus,score_gpus", [
     ("0,1,2", "2,3,6,7"),
-    ("0,1,2,3,4,5,6,7", "2,3"),
 ])
 def test_resume_rejects_changed_inference_or_score_partition(runner, gpus, score_gpus):
     runner()
@@ -63,3 +62,16 @@ def test_resume_rejects_changed_inference_or_score_partition(runner, gpus, score
 def test_resume_allows_physical_gpu_reassignment(runner):
     runner()
     runner("7,6,5,4,3,2,1,0", "7,6,3,2")
+
+
+def test_scoring_can_resume_with_32_workers(runner):
+    runner()
+    commands = runner(score_gpus="2,3,4,5,0,1,6,7", score_workers=4)
+    scoring = [(cmd, gpu) for label, cmd, gpu in commands
+               if label.startswith("full-score-") and cmd[cmd.index("--workers") + 1] == "16"]
+    assert len(scoring) == 32
+    for language in ("en", "zh"):
+        subset = [(cmd, gpu) for cmd, gpu in scoring if cmd[cmd.index("--language") + 1] == language]
+        assert sorted(int(cmd[cmd.index("--shard") + 1]) for cmd, _ in subset) == list(range(16))
+    from collections import Counter
+    assert Counter(gpu for _, gpu in scoring) == {str(i): 4 for i in range(8)}
