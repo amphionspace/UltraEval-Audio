@@ -58,7 +58,7 @@ def generate_local_batch(model, batch, params, language_auto):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="Registered model name or local model output label")
-    parser.add_argument("--model-path", help="Exported local Qwen3-TTS checkpoint")
+    parser.add_argument("--model-path", help="Exported local Qwen3-TTS or LFM-TTS checkpoint")
     parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl", "icl_only"])
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
     parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
@@ -80,7 +80,7 @@ def main():
     if args.gpu_memory_gib < 0 or args.gpu_reserve_gib < 0:
         parser.error("GPU memory budget and reserve must be nonnegative")
     if args.max_audio_seconds < 0 or (args.max_audio_seconds and not args.model_path):
-        parser.error("duration cutoff requires a local Qwen checkpoint and a nonnegative duration")
+        parser.error("duration cutoff requires a local checkpoint and a nonnegative duration")
     if Path(args.model).name != args.model or args.model in {".", ".."}:
         parser.error("model must be a directory name, not a path")
     if args.model_path and not args.conditioning:
@@ -102,10 +102,15 @@ def main():
         raise ValueError("No input manifests found")
     identity = {"arguments": vars(args).copy(), "model_path": str(model_dir),
                 "manifests": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in manifests}}
+    model_family = None
     if args.model_path:
         identity["export"] = json.loads((model_dir / "export.json").read_text())
         exported_speaker = identity["export"].get("use_speaker_embedding", True)
-        model_speaker = json.loads((model_dir / "config.json").read_text())["talker_config"].get("lm_tts_use_speaker_embedding", True)
+        raw_config = json.loads((model_dir / "config.json").read_text())
+        model_family = raw_config["model_type"]
+        model_speaker = raw_config["talker_config"].get("lm_tts_use_speaker_embedding", True)
+        if model_family == "lfm2_tts" and (args.batch_size != 1 or not args.non_streaming or not args.language_auto):
+            raise ValueError("LFM inference requires batch size 1, non-streaming and Auto language")
         if exported_speaker != model_speaker:
             raise ValueError("Export and model config disagree on speaker conditioning")
         if not exported_speaker and args.conditioning != "icl_only":
@@ -158,7 +163,21 @@ def main():
         effective_budget_gib = budget / 1024**3
         print(f"Requested GPU budget={args.gpu_memory_gib} GiB; effective={effective_budget_gib:.2f} GiB", flush=True)
     paths_used = {}
-    if args.model_path or args.model.startswith("qwen"):
+    if model_family == "lfm2_tts":
+        from local_lfm import LfmVoiceClone
+
+        args.fast = False
+        adapter = LfmVoiceClone(model_dir, conditioning=args.conditioning,
+                               max_audio_seconds=args.max_audio_seconds, greedy=args.greedy)
+        params, paths_used = adapter.params, adapter.paths_used
+
+        def generate(batch, seed):
+            result = adapter.generate(batch, seed)
+            validation = {**paths_used, "batch_size": len(batch), "model": args.model}
+            (output_dir / f"conditioning-verified-{args.shard:02d}.json").write_text(json.dumps(validation, indent=2))
+            return result
+
+    elif args.model_path or args.model.startswith("qwen"):
         args.fast = False  # Qwen uses the native SDPA path, not Breeze's fast runtime.
         from qwen_tts import Qwen3TTSModel
         model = Qwen3TTSModel.from_pretrained(str(model_dir), device_map="cuda:0",
