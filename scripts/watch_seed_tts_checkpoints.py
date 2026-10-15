@@ -91,10 +91,25 @@ def next_job(jobs, now):
     return min(eligible, key=lambda key: (jobs[key]['step'], jobs[key]['variant'] != 'default')) if eligible else None
 
 
-def resource_shortage(config):
+def gpu_memory():
     output = subprocess.check_output(['nvidia-smi', '--query-gpu=index,memory.free',
                                       '--format=csv,noheader,nounits'], text=True)
-    free = {int(i): int(m) for i, m in (row.split(',') for row in output.splitlines())}
+    return {int(i): int(m) for i, m in (row.split(',') for row in output.splitlines())}
+
+
+def select_gpus(config):
+    free = gpu_memory()
+    eligible = [gpu for gpu in config.get('gpu_candidates', config['gpus'])
+                if free[gpu] >= config['minimum_free_gib'] * 1024]
+    count = len(config['gpus'])
+    if len(eligible) < count:
+        return None
+    # Select by current free memory; logical inference partitions stay unchanged.
+    return sorted(sorted(eligible, key=lambda gpu: (-free[gpu], gpu))[:count])
+
+
+def resource_shortage(config):
+    free = gpu_memory()
     return {str(gpu): free[gpu] for gpu in config['gpus']
             if free[gpu] < config['minimum_free_gib'] * 1024}
 
@@ -167,8 +182,11 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
     parser.add_argument('--variant', choices=['default', 'mixed'], default='default')
+    parser.add_argument('--gpus', help='Physical GPU IDs selected for one job')
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
+    if args.gpus:
+        config['gpus'] = list(map(int, args.gpus.split(',')))
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, stop)
@@ -210,18 +228,18 @@ def main():
                     _, run = job_paths(config, step, variant)
                     if any(busy(Path(p)) for p in config['wait_for_runs']) or busy(run):
                         status = 'waiting_other_evaluation'
-                    elif (shortage := resource_shortage(config)):
+                    elif (selected := select_gpus(config)) is None:
                         status = 'waiting_gpu_memory'
-                        errors['gpu_free_mib'] = shortage
+                        errors['gpu_free_mib'] = gpu_memory()
                     else:
                         run.mkdir(parents=True, exist_ok=True)
                         child_log = (run / 'launcher.log').open('a', buffering=1)
                         child = subprocess.Popen([sys.executable, '-u', '-m', 'scripts.watch_seed_tts_checkpoints',
-                            '--config', str(args.config.resolve()), '--step', str(step), '--variant', variant], cwd=ROOT,
+                            '--config', str(args.config.resolve()), '--step', str(step), '--variant', variant, '--gpus', ','.join(map(str, selected))], cwd=ROOT,
                             stdout=child_log, stderr=subprocess.STDOUT)
                         active, status = key, 'evaluating'
                         jobs[key].update(state='running', attempts=jobs[key]['attempts'] + 1,
-                                               started_at=now, run_dir=str(run), pid=child.pid)
+                                               started_at=now, run_dir=str(run), pid=child.pid, selected_gpus=selected)
                 record = {'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                           'state': status, 'active_job': active, 'jobs': jobs, 'errors': errors,
                           'interval_seconds': config['interval_seconds']}

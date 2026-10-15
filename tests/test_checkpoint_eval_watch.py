@@ -116,6 +116,7 @@ def test_main_launches_one_variant_and_persists_both_jobs(tmp_path, monkeypatch)
     path.write_text(json.dumps(config))
     monkeypatch.setattr(sys, 'argv', ['watch', '--config', str(path)])
     monkeypatch.setattr(watch, 'resource_shortage', lambda _: {})
+    monkeypatch.setattr(watch, 'select_gpus', lambda _: [0, 1, 6, 7])
     monkeypatch.setattr(watch.signal, 'signal', lambda *_: None)
     calls = []
     class Process:
@@ -140,4 +141,19 @@ def test_main_launches_one_variant_and_persists_both_jobs(tmp_path, monkeypatch)
     assert saved['active_job'] == '25000:default'
     assert saved['jobs']['25000:default']['attempts'] == 1
     assert saved['jobs']['25000:mixed']['state'] == 'queued'
-    assert len(calls) == 1 and calls[0][-2:] == ['--variant', 'default']
+    assert len(calls) == 1
+    assert calls[0][calls[0].index('--variant') + 1] == 'default'
+    assert calls[0][-2:] == ['--gpus', '0,1,6,7']
+
+
+def test_busy_preferred_gpu_does_not_block_available_alternatives(monkeypatch):
+    config = {'gpus': [0, 1, 6, 7], 'gpu_candidates': list(range(8)), 'minimum_free_gib': 30}
+    free = {0: 9*1024, 1: 31*1024, 2: 37*1024, 3: 33*1024,
+            4: 45*1024, 5: 48*1024, 6: 44*1024, 7: 39*1024}
+    monkeypatch.setattr(watch, 'gpu_memory', lambda: free)
+    assert watch.select_gpus(config) == [4, 5, 6, 7]
+    free[4] = 0
+    assert watch.select_gpus(config) == [2, 5, 6, 7]
+    for gpu in [2, 3, 5, 6]:
+        free[gpu] = 0
+    assert watch.select_gpus(config) is None
