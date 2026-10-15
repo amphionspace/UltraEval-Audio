@@ -28,13 +28,16 @@ def runner(tmp_path, monkeypatch):
     monkeypatch.setattr(run_seed_tts, "parallel", parallel)
     monkeypatch.setattr(run_seed_tts.subprocess, "run", lambda *_, **__: None)
 
-    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1, workers=1, shards=None):
+    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1, workers=1, shards=None, mixed=False):
         monkeypatch.setattr(sys, "argv", ["runner", "--model-path", "model",
             "--run-dir", "run", "--modes", "icl_only", "--gpus", gpus,
             "--score-gpus", score_gpus, "--score-workers-per-gpu", str(score_workers), "--gpu-memory-gib", "4", "--gpu-reserve-gib", "0.5"])
         sys.argv.extend(["--workers-per-gpu", str(workers)])
         if shards is not None:
             sys.argv.extend(["--inference-shards", str(shards)])
+        if mixed:
+            sys.argv.extend(["--code-predictor-greedy", "--talker-temperature", "0.3", "--talker-top-p", "1",
+                             "--talker-top-k", "10", "--talker-repetition-penalty", "2"])
         run_seed_tts.main()
         return commands
 
@@ -97,3 +100,17 @@ def test_resume_32_partitions_on_four_gpus_in_two_waves(runner):
     from collections import Counter
     for wave in waves:
         assert Counter(gpu for _, _, gpu in wave) == {"0": 4, "1": 4, "6": 4, "7": 4}
+
+
+def test_mixed_parameters_forwarded_and_resume_identity_is_fixed(runner):
+    commands = runner(mixed=True)
+    inference = [cmd for label, cmd, _ in commands if label.startswith("full-icl_only-")]
+    assert inference
+    for cmd in inference:
+        assert "--code-predictor-greedy" in cmd
+        for flag, value in [("--talker-temperature", "0.3"), ("--talker-top-p", "1.0"),
+                            ("--talker-top-k", "10"), ("--talker-repetition-penalty", "2.0")]:
+            assert cmd[cmd.index(flag) + 1] == value
+    runner(mixed=True)
+    with pytest.raises(ValueError, match="Run identity changed"):
+        runner(mixed=False)

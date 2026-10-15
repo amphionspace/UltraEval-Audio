@@ -100,6 +100,11 @@ def main():
     parser.add_argument("--wait-for-lock", action="store_true", help="Wait for an earlier phase in the same run directory")
     parser.add_argument("--modes", nargs="+", choices=MODES, default=["speaker_only", "speaker_icl"])
     parser.add_argument("--greedy", action="store_true", help="Disable both Talker and Code Predictor sampling")
+    parser.add_argument("--code-predictor-greedy", action="store_true")
+    parser.add_argument("--talker-temperature", type=float)
+    parser.add_argument("--talker-top-p", type=float)
+    parser.add_argument("--talker-top-k", type=int)
+    parser.add_argument("--talker-repetition-penalty", type=float)
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
     if args.max_audio_seconds < 0:
@@ -137,9 +142,14 @@ def main():
              "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
              "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
+    decoding = {key: getattr(args, key) for key in ("code_predictor_greedy", "talker_temperature",
+                "talker_top_p", "talker_top_k", "talker_repetition_penalty")}
+    state["decoding"] = decoding
     identity_path = run / "identity.json"
     if identity_path.exists():
         previous = json.loads(identity_path.read_text())
+        previous.setdefault("decoding", {"code_predictor_greedy": False, "talker_temperature": None,
+                            "talker_top_p": None, "talker_top_k": None, "talker_repetition_penalty": None})
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
         previous.setdefault("score_gpus", previous["gpus"])
@@ -193,6 +203,13 @@ def main():
                            "--max-audio-seconds", str(args.max_audio_seconds)]
                     if args.greedy:
                         cmd.append("--greedy")
+                    for key, value in decoding.items():
+                        flag = "--" + key.replace("_", "-")
+                        if key == "code_predictor_greedy":
+                            if value:
+                                cmd.append(flag)
+                        elif value is not None:
+                            cmd.extend([flag, str(value)])
                     commands.append((f"{phase}-{mode}-{shard:02d}", cmd, gpus[shard % len(gpus)]))
                 concurrency = len(gpus) * args.workers_per_gpu
                 for start in range(0, len(commands), concurrency):

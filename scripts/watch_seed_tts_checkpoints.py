@@ -62,16 +62,33 @@ def busy(run):
     return False
 
 
-def job_paths(config, step):
+def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
-    run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-default-sampling-4gpu"
+    suffix = "default-sampling" if variant == "default" else "talkert03-k10-rp2-cpgreedy"
+    run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-4gpu"
     return model, run
 
 
+def migrate_jobs(jobs):
+    migrated = {}
+    for key, job in jobs.items():
+        step = int(key) if key.isdigit() else int(key.split(":")[0])
+        variant = "default" if key.isdigit() else key.split(":")[1]
+        migrated[f"{step}:{variant}"] = {**job, "step": step, "variant": variant}
+    return migrated
+
+
+def register_jobs(jobs, steps, variants, now):
+    for step in steps:
+        for variant in variants:
+            jobs.setdefault(f"{step}:{variant}", {"step": step, "variant": variant,
+                "state": "queued", "discovered_at": now, "attempts": 0})
+
+
 def next_job(jobs, now):
-    eligible = [int(step) for step, job in jobs.items()
+    eligible = [key for key, job in jobs.items()
                 if job['state'] != 'complete' and job.get('retry_at', 0) <= now]
-    return min(eligible) if eligible else None
+    return min(eligible, key=lambda key: (jobs[key]['step'], jobs[key]['variant'] != 'default')) if eligible else None
 
 
 def resource_shortage(config):
@@ -97,8 +114,8 @@ def run_command(command, log, env=None, cwd=ROOT):
                 process.wait()
 
 
-def run_job(config, step):
-    model, run = job_paths(config, step)
+def run_job(config, step, variant="default"):
+    model, run = job_paths(config, step, variant)
     checkpoint = Path(config['checkpoint_dir']) / f'step-{step:08d}'
     run.mkdir(parents=True, exist_ok=True)
     with (run / '.job.lock').open('a') as lock, (run / 'job.log').open('a', buffering=1) as log:
@@ -125,12 +142,16 @@ def run_job(config, step):
         if shortage:
             raise RuntimeError(f'Insufficient free GPU memory (MiB): {shortage}')
         gpus = ','.join(map(str, config['gpus']))
-        # No generation overrides: both Talker and Code Predictor use their defaults.
+        # Each decoding variant gets its own journals while sharing the verified export.
         command = [str(ROOT / 'envs/tts/bin/python'), '-u', '-m', 'scripts.run_seed_tts',
                    '--model-path', str(model), '--run-dir', str(run), '--modes', 'speaker_icl',
                    '--gpus', gpus, '--workers-per-gpu', '4', '--inference-shards', '32',
                    '--score-gpus', gpus, '--score-workers-per-gpu', '2', '--batch-size', '1',
                    '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6', '--max-audio-seconds', '30']
+        if variant == 'mixed':
+            command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
+                            '--talker-top-k', '10', '--talker-repetition-penalty', '2',
+                            '--code-predictor-greedy'])
         write_json(run / 'eval_command.json', command)
         run_command(command, log)
         if not completed(run):
@@ -145,28 +166,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
+    parser.add_argument('--variant', choices=['default', 'mixed'], default='default')
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, stop)
     if args.step is not None:
-        run_job(config, args.step)
+        run_job(config, args.step, args.variant)
         return
     watch = Path(config['watch_dir'])
     watch.mkdir(parents=True, exist_ok=True)
     lock = (watch / '.watch.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     state_path = watch / 'queue.json'
-    jobs = json.loads(state_path.read_text())['jobs'] if state_path.exists() else {}
+    jobs = migrate_jobs(json.loads(state_path.read_text())['jobs']) if state_path.exists() else {}
     child, child_log, active = None, None, None
     try:
         while True:
             try:
                 now = time.time()
                 if child is not None and child.poll() is not None:
-                    _, run = job_paths(config, active)
-                    job = jobs[str(active)]
+                    _, run = job_paths(config, jobs[active]['step'], jobs[active]['variant'])
+                    job = jobs[active]
                     if child.returncode == 0 and completed(run):
                         job.update(state='complete', finished_at=now)
                     else:
@@ -175,15 +197,17 @@ def main():
                     child_log.close()
                     child, child_log, active = None, None, None
                 ready, errors = discover_checkpoints(Path(config['checkpoint_dir']), config['after_step'])
-                for step in ready:
-                    jobs.setdefault(str(step), {'state': 'queued', 'discovered_at': now, 'attempts': 0})
-                    _, run = job_paths(config, step)
-                    if step != active and completed(run):
-                        jobs[str(step)]['state'] = 'complete'
+                register_jobs(jobs, ready, config.get('variants', ['default', 'mixed']), now)
+                for key, job in jobs.items():
+                    _, run = job_paths(config, job['step'], job['variant'])
+                    if key != active and completed(run):
+                        job['state'] = 'complete'
                 status = 'evaluating' if child else 'waiting_checkpoint'
-                step = next_job(jobs, now) if child is None else None
-                if step is not None:
-                    _, run = job_paths(config, step)
+                key = next_job(jobs, now) if child is None else None
+                if key is not None:
+                    job = jobs[key]
+                    step, variant = job['step'], job['variant']
+                    _, run = job_paths(config, step, variant)
                     if any(busy(Path(p)) for p in config['wait_for_runs']) or busy(run):
                         status = 'waiting_other_evaluation'
                     elif (shortage := resource_shortage(config)):
@@ -193,20 +217,20 @@ def main():
                         run.mkdir(parents=True, exist_ok=True)
                         child_log = (run / 'launcher.log').open('a', buffering=1)
                         child = subprocess.Popen([sys.executable, '-u', '-m', 'scripts.watch_seed_tts_checkpoints',
-                            '--config', str(args.config.resolve()), '--step', str(step)], cwd=ROOT,
+                            '--config', str(args.config.resolve()), '--step', str(step), '--variant', variant], cwd=ROOT,
                             stdout=child_log, stderr=subprocess.STDOUT)
-                        active, status = step, 'evaluating'
-                        jobs[str(step)].update(state='running', attempts=jobs[str(step)]['attempts'] + 1,
+                        active, status = key, 'evaluating'
+                        jobs[key].update(state='running', attempts=jobs[key]['attempts'] + 1,
                                                started_at=now, run_dir=str(run), pid=child.pid)
                 record = {'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                          'state': status, 'active_step': active, 'jobs': jobs, 'errors': errors,
+                          'state': status, 'active_job': active, 'jobs': jobs, 'errors': errors,
                           'interval_seconds': config['interval_seconds']}
                 write_json(state_path, record)
                 with (watch / 'checks.jsonl').open('a') as log:
                     log.write(json.dumps(record) + '\n')
             except Exception:
                 record = {'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                          'state': 'check_error', 'active_step': active, 'jobs': jobs,
+                          'state': 'check_error', 'active_job': active, 'jobs': jobs,
                           'error': traceback.format_exc(), 'interval_seconds': config['interval_seconds']}
                 write_json(state_path, record)
                 print(record['error'], flush=True)
