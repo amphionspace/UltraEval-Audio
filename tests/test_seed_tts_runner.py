@@ -21,17 +21,24 @@ def runner(tmp_path, monkeypatch):
     for language in ("en", "zh"):
         (manifests / f"{language}.jsonl").write_text('{}\n{}\n')
     monkeypatch.setattr(run_seed_tts, "ROOT", tmp_path)
-    commands = []
-    monkeypatch.setattr(run_seed_tts, "parallel", lambda batch, *_: commands.extend(batch))
+    commands, batches = [], []
+    def parallel(batch, *_):
+        commands.extend(batch)
+        batches.append(batch)
+    monkeypatch.setattr(run_seed_tts, "parallel", parallel)
     monkeypatch.setattr(run_seed_tts.subprocess, "run", lambda *_, **__: None)
 
-    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1):
+    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1, workers=1, shards=None):
         monkeypatch.setattr(sys, "argv", ["runner", "--model-path", "model",
             "--run-dir", "run", "--modes", "icl_only", "--gpus", gpus,
             "--score-gpus", score_gpus, "--score-workers-per-gpu", str(score_workers), "--gpu-memory-gib", "4", "--gpu-reserve-gib", "0.5"])
+        sys.argv.extend(["--workers-per-gpu", str(workers)])
+        if shards is not None:
+            sys.argv.extend(["--inference-shards", str(shards)])
         run_seed_tts.main()
         return commands
 
+    invoke.batches = batches
     return invoke
 
 
@@ -75,3 +82,18 @@ def test_scoring_can_resume_with_32_workers(runner):
         assert sorted(int(cmd[cmd.index("--shard") + 1]) for cmd, _ in subset) == list(range(16))
     from collections import Counter
     assert Counter(gpu for _, gpu in scoring) == {str(i): 4 for i in range(8)}
+
+
+def test_resume_32_partitions_on_four_gpus_in_two_waves(runner):
+    runner(workers=4)
+    start = len(runner.batches)
+    runner(gpus="0,1,6,7", workers=4, shards=32)
+    waves = [batch for batch in runner.batches[start:]
+             if batch and batch[0][0].startswith("full-icl_only-")]
+    assert [len(batch) for batch in waves] == [16, 16]
+    commands = [command for batch in waves for _, command, _ in batch]
+    assert [int(cmd[cmd.index("--shard") + 1]) for cmd in commands] == list(range(32))
+    assert all(cmd[cmd.index("--num-shards") + 1] == "32" for cmd in commands)
+    from collections import Counter
+    for wave in waves:
+        assert Counter(gpu for _, _, gpu in wave) == {"0": 4, "1": 4, "6": 4, "7": 4}

@@ -91,6 +91,7 @@ def main():
     parser.add_argument("--score-gpus", help="Scoring GPU IDs; defaults to the inference GPUs")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--workers-per-gpu", type=int, default=1)
+    parser.add_argument("--inference-shards", type=int, help="Fixed sample partitions; defaults to GPU count times workers per GPU")
     parser.add_argument("--score-workers-per-gpu", type=int, default=1)
     parser.add_argument("--gpu-memory-gib", type=float, default=8, help="Per-inference-worker PyTorch allocation cap")
     parser.add_argument("--gpu-reserve-gib", type=float, default=2, help="Free memory reserve for each inference worker")
@@ -111,6 +112,9 @@ def main():
         parser.error("gpu-memory-gib must be at least 4; gpu-reserve-gib must be nonnegative")
     if not all(g.isdigit() for g in gpus) or len(set(gpus)) != len(gpus) or args.workers_per_gpu < 1 or args.batch_size < 1:
         parser.error("gpus must be distinct numeric IDs; workers-per-gpu must be positive")
+    inference_shards = args.inference_shards if args.inference_shards is not None else len(gpus) * args.workers_per_gpu
+    if inference_shards < 1:
+        parser.error("inference-shards must be positive")
     run = (ROOT / args.run_dir).resolve()
     model = (ROOT / args.model_path).resolve()
     run.mkdir(parents=True, exist_ok=True)
@@ -131,7 +135,7 @@ def main():
         raise ValueError("Exported weights do not match export.json")
     state = {"checkpoint": report, "model_path": str(model), "gpus": gpus,
              "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
-             "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
+             "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
     identity_path = run / "identity.json"
     if identity_path.exists():
@@ -139,9 +143,10 @@ def main():
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
         previous.setdefault("score_gpus", previous["gpus"])
-        # Inference partitioning fixes sampling seeds; scoring can repartition saved audio.
-        if (len(previous["gpus"]) != len(gpus)
-                or {**previous, "gpus": gpus, "score_gpus": score_gpus,
+        previous.setdefault("inference_shards", len(previous["gpus"]) * previous["workers_per_gpu"])
+        # Logical partitions stay fixed while physical GPUs and concurrency can change.
+        if ({**previous, "gpus": gpus, "score_gpus": score_gpus,
+                    "workers_per_gpu": args.workers_per_gpu,
                     "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib, "gpu_reserve_gib": args.gpu_reserve_gib} != state):
             raise ValueError("Run identity changed; resume with identical settings or use a new run directory")
     policy_path = run / "duration_policy.json"
@@ -173,7 +178,7 @@ def main():
             output = run / phase
             output.mkdir(exist_ok=True)
             manifests = run / "smoke_inputs" if phase == "smoke" else ROOT / "raw_data/seed_tts_manifests"
-            shards = 1 if phase == "smoke" else len(gpus) * args.workers_per_gpu
+            shards = 1 if phase == "smoke" else inference_shards
             for mode in args.modes:
                 status(f"{phase}:inference:{mode}")
                 commands = []
@@ -189,7 +194,9 @@ def main():
                     if args.greedy:
                         cmd.append("--greedy")
                     commands.append((f"{phase}-{mode}-{shard:02d}", cmd, gpus[shard % len(gpus)]))
-                parallel(commands, env, logs)
+                concurrency = len(gpus) * args.workers_per_gpu
+                for start in range(0, len(commands), concurrency):
+                    parallel(commands[start:start + concurrency], env, logs)
             if args.inference_only:
                 continue
             status(f"{phase}:scoring")
