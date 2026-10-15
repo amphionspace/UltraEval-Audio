@@ -136,7 +136,7 @@ def main():
                     if args.expect_greedy:
                         require(greedy, f"Expected greedy inference: {file}")
                     require(cfg["sampling"].get("do_sample", True) == (not greedy)
-                            and cfg["sampling"].get("subtalker_dosample", True) == (not greedy),
+                            and cfg["sampling"].get("subtalker_dosample", True) == (not (greedy or cfg.get("code_predictor_greedy", False))),
                             f"Sampling flags disagree with greedy setting: {file}")
                     require(cfg["non_streaming"] and cfg["language_auto"], f"Training protocol: {file}")
                     for key, row in generated.items():

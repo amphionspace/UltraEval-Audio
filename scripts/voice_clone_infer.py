@@ -55,6 +55,19 @@ def generate_local_batch(model, batch, params, language_auto):
         tokenizer.decode = original_decode
 
 
+def qwen_generation_params(args):
+    params = dict(max_new_tokens=2048, do_sample=not args.greedy, top_k=50, top_p=1.0,
+                  temperature=0.9, repetition_penalty=1.05,
+                  subtalker_dosample=not (args.greedy or args.code_predictor_greedy),
+                  subtalker_top_k=50, subtalker_top_p=1.0, subtalker_temperature=0.9)
+    for flag, key in (("talker_temperature", "temperature"), ("talker_top_p", "top_p"),
+                      ("talker_top_k", "top_k"), ("talker_repetition_penalty", "repetition_penalty")):
+        value = getattr(args, flag)
+        if value is not None:
+            params[key] = value
+    return params
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="Registered model name or local model output label")
@@ -63,6 +76,11 @@ def main():
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
     parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
     parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
+    parser.add_argument("--code-predictor-greedy", action="store_true", help="Qwen only: disable Code Predictor sampling independently")
+    parser.add_argument("--talker-temperature", type=float)
+    parser.add_argument("--talker-top-p", type=float)
+    parser.add_argument("--talker-top-k", type=int)
+    parser.add_argument("--talker-repetition-penalty", type=float)
     parser.add_argument("--manifest-dir", default="raw_data/voice_clone_manifests")
     parser.add_argument("--gpu-memory-gib", type=float, default=0,
                         help="Maximum PyTorch allocator budget; clamp to free memory minus the reserve")
@@ -77,6 +95,15 @@ def main():
     parser.add_argument("--run-dir", default="res/voice_clone_20260907")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
+    custom_qwen = args.code_predictor_greedy or any(value is not None for value in
+        (args.talker_temperature, args.talker_top_p, args.talker_top_k, args.talker_repetition_penalty))
+    if ((args.talker_temperature is not None and not 0 < args.talker_temperature < float("inf"))
+            or (args.talker_top_p is not None and not 0 < args.talker_top_p <= 1)
+            or (args.talker_top_k is not None and args.talker_top_k < 0)
+            or (args.talker_repetition_penalty is not None and not 0 < args.talker_repetition_penalty < float("inf"))):
+        parser.error("Invalid Talker sampling parameters")
+    if custom_qwen and not (args.model_path or args.model.startswith("qwen")):
+        parser.error("Custom Talker / Code Predictor settings require Qwen inference")
     if args.gpu_memory_gib < 0 or args.gpu_reserve_gib < 0:
         parser.error("GPU memory budget and reserve must be nonnegative")
     if args.max_audio_seconds < 0 or (args.max_audio_seconds and not args.model_path):
@@ -108,6 +135,8 @@ def main():
         exported_speaker = identity["export"].get("use_speaker_embedding", True)
         raw_config = json.loads((model_dir / "config.json").read_text())
         model_family = raw_config["model_type"]
+        if custom_qwen and model_family != "qwen3_tts":
+            raise ValueError("Custom Talker / Code Predictor settings require a Qwen checkpoint")
         model_speaker = raw_config["talker_config"].get("lm_tts_use_speaker_embedding", True)
         if model_family == "lfm2_tts" and (args.batch_size != 1 or not args.non_streaming or not args.language_auto):
             raise ValueError("LFM inference requires batch size 1, non-streaming and Auto language")
@@ -121,6 +150,9 @@ def main():
     if receipt.exists():
         previous = json.loads(receipt.read_text())
         previous["arguments"].setdefault("greedy", False)
+        previous["arguments"].setdefault("code_predictor_greedy", False)
+        for flag in ("talker_temperature", "talker_top_p", "talker_top_k", "talker_repetition_penalty"):
+            previous["arguments"].setdefault(flag, None)
         # A duration cutoff changes only the excluded tail, not retained short outputs.
         previous_cutoff = previous["arguments"].get("max_audio_seconds", 0)
         if previous_cutoff and (not args.max_audio_seconds or args.max_audio_seconds > previous_cutoff):
@@ -182,10 +214,7 @@ def main():
         from qwen_tts import Qwen3TTSModel
         model = Qwen3TTSModel.from_pretrained(str(model_dir), device_map="cuda:0",
                                              dtype=torch.bfloat16, attn_implementation="sdpa")
-        params = dict(max_new_tokens=2048, do_sample=not args.greedy, top_k=50, top_p=1.0,
-                      temperature=0.9, repetition_penalty=1.05,
-                      subtalker_dosample=not args.greedy, subtalker_top_k=50,
-                      subtalker_top_p=1.0, subtalker_temperature=0.9)
+        params = qwen_generation_params(args)
         if args.max_audio_seconds:
             codec = json.loads((model_dir / "speech_tokenizer/config.json").read_text())
             frame_rate = codec["output_sample_rate"] / codec["decode_upsample_rate"]

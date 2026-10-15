@@ -302,3 +302,20 @@ def test_local_batch_keeps_codec_independent_and_restores_decoder(fail):
         assert generate_local_batch(model, batch, {"x_vector_only_mode": False}, True) == (["audio 0", "audio 1"], 24000)
     assert encoded == ["audio 0", "audio 1"] and len(decoded) == 2
     assert tokenizer.decode is decode
+
+
+@pytest.mark.parametrize("actual", [False, True])
+def test_independent_code_predictor_greedy_is_audited(tmp_path, monkeypatch, actual):
+    inputs, run, model, _ = setup_run(tmp_path)
+    path = model / "settings-00.json"
+    cfg = json.loads(path.read_text())
+    cfg.update(greedy=False, code_predictor_greedy=True)
+    cfg["sampling"].update(do_sample=True, subtalker_dosample=actual)
+    path.write_text(json.dumps(cfg))
+    monkeypatch.setattr(sys, "argv", ["audit", "--run-dir", str(run), "--manifest-dir", str(inputs),
+        "--models", "speaker_only", "--num-shards", "1", "--output-name", "audit.json"])
+    if actual:
+        with pytest.raises(ValueError, match="Sampling flags"):
+            audit_voice_clone.main()
+    else:
+        audit_voice_clone.main()
