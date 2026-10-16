@@ -8,6 +8,7 @@ import signal
 from pathlib import Path
 import sys
 import subprocess
+import tempfile
 import time
 import traceback
 
@@ -39,6 +40,24 @@ def configure():
         "p808_model_path": str(ROOT / "init_model/DNS-Challenge/DNSMOS/DNSMOS/model_v8.onnx"),
     })
     return registry
+
+
+def save_score(target, records, result):
+    # Readers see a complete journal even if a worker stops during its next write.
+    updated = [*records, json.dumps(result, ensure_ascii=False) + "\n"]
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                         prefix=target.name + ".", delete=False) as output:
+            temporary = Path(output.name)
+            output.writelines(updated)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    records[:] = updated
 
 
 def main():
@@ -134,7 +153,10 @@ def main():
         remaining = [r for key, r in sorted(samples.items()) if key not in done]
         if args.limit:
             remaining = remaining[:args.limit]
-        with target.open("a", buffering=1) as output:
+        records = target.read_text().splitlines(keepends=True) if target.exists() else []
+        # An interrupted append from an older version is not a saved score.
+        records = [line for line in records if line.endswith("\n")]
+        if remaining:
             for i, row in enumerate(remaining):
                 started = time.monotonic()
                 try:
@@ -148,11 +170,11 @@ def main():
                               "status": "ok", "score": score, "seconds": time.monotonic() - started}
                     if args.group == "cv3":
                         result["dnsmos_num_threads"] = int(os.environ["DNSMOS_NUM_THREADS"])
-                    output.write(json.dumps(result, ensure_ascii=False) + "\n")
+                    save_score(target, records, result)
                     print(f"{model_dir.name} {row['dataset']} {i+1}/{len(remaining)} {score}", flush=True)
                 except Exception:
-                    output.write(json.dumps({"dataset": row["dataset"], "index": row["index"],
-                                             "status": "error", "error": traceback.format_exc()}, ensure_ascii=False) + "\n")
+                    save_score(target, records, {"dataset": row["dataset"], "index": row["index"],
+                                                "status": "error", "error": traceback.format_exc()})
                     raise
 
 
