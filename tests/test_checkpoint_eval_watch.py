@@ -178,3 +178,11 @@ def test_mixed_waits_for_default_retry():
             '1:mixed': {'step': 1, 'variant': 'mixed', 'state': 'queued'}}
     assert watch.next_job(jobs, 100) is None
     assert watch.next_job(jobs, 201) == '1:default'
+
+
+def test_admission_accounts_for_scoring_concurrency(monkeypatch):
+    config = {'gpus': [0, 1], 'minimum_free_gib': 30, 'score_workers_per_gpu': 2}
+    monkeypatch.setattr(watch, 'gpu_memory', lambda: {0: 40*1024, 1: 50*1024})
+    assert watch.select_gpus(config) is None
+    config['score_workers_per_gpu'] = 1
+    assert watch.select_gpus(config) == [0, 1]

@@ -100,10 +100,17 @@ def gpu_memory():
     return {int(i): int(m) for i, m in (row.split(',') for row in output.splitlines())}
 
 
+def required_free_gib(config):
+    """Use the same per-wave budgets as the runner for device admission."""
+    return max(config['minimum_free_gib'],
+               config.get('workers_per_gpu', 4) * 6 + 6,
+               config.get('score_workers_per_gpu', 1) * 20 + 6)
+
+
 def select_gpus(config):
     free = gpu_memory()
     eligible = [gpu for gpu in config.get('gpu_candidates', config['gpus'])
-                if free[gpu] >= config['minimum_free_gib'] * 1024]
+                if free[gpu] >= required_free_gib(config) * 1024]
     count = len(config['gpus'])
     if len(eligible) < config.get('minimum_gpus', count):
         return None
@@ -114,7 +121,7 @@ def select_gpus(config):
 def resource_shortage(config):
     free = gpu_memory()
     return {str(gpu): free[gpu] for gpu in config['gpus']
-            if free[gpu] < config['minimum_free_gib'] * 1024}
+            if free[gpu] < required_free_gib(config) * 1024}
 
 
 def run_command(command, log, env=None, cwd=ROOT):
@@ -163,8 +170,8 @@ def run_job(config, step, variant="default"):
         # Each decoding variant gets its own journals while sharing the verified export.
         command = [str(ROOT / 'envs/tts/bin/python'), '-u', '-m', 'scripts.run_seed_tts',
                    '--model-path', str(model), '--run-dir', str(run), '--modes', 'speaker_icl',
-                   '--gpus', gpus, '--workers-per-gpu', '4', '--inference-shards', '32',
-                   '--score-gpus', gpus, '--score-workers-per-gpu', '2', '--batch-size', '1',
+                   '--gpus', gpus, '--workers-per-gpu', str(config.get('workers_per_gpu', 4)), '--inference-shards', '32',
+                   '--score-gpus', gpus, '--score-workers-per-gpu', str(config.get('score_workers_per_gpu', 1)), '--batch-size', '1',
                    '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6', '--max-audio-seconds', '30']
         if variant == 'mixed':
             command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
@@ -202,6 +209,10 @@ def main():
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     state_path = watch / 'queue.json'
     jobs = migrate_jobs(json.loads(state_path.read_text())['jobs']) if state_path.exists() else {}
+    # No child belongs to this new watcher; pipeline locks protect external jobs.
+    for job in jobs.values():
+        if job['state'] == 'running':
+            job['state'] = 'queued'
     child, child_log, active = None, None, None
     try:
         while True:
