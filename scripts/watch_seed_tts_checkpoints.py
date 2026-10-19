@@ -87,7 +87,10 @@ def register_jobs(jobs, steps, variants, now):
 
 def next_job(jobs, now):
     eligible = [key for key, job in jobs.items()
-                if job['state'] != 'complete' and job.get('retry_at', 0) <= now]
+                if job['state'] != 'complete' and job.get('retry_at', 0) <= now
+                and not (job['variant'] == 'mixed'
+                         and f"{job['step']}:default" in jobs
+                         and jobs[f"{job['step']}:default"]['state'] != 'complete')]
     return min(eligible, key=lambda key: (jobs[key]['step'], jobs[key]['variant'] != 'default')) if eligible else None
 
 

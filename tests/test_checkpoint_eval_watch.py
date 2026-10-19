@@ -171,3 +171,10 @@ def test_elastic_gpu_selection_waits_below_minimum_and_expands_when_free(monkeyp
     assert watch.select_gpus(config) == [0, 1, 2, 4, 6]
     free.update({i: 40*1024 for i in range(8)})
     assert watch.select_gpus(config) == list(range(8))
+
+
+def test_mixed_waits_for_default_retry():
+    jobs = {'1:default': {'step': 1, 'variant': 'default', 'state': 'retry_pending', 'retry_at': 200},
+            '1:mixed': {'step': 1, 'variant': 'mixed', 'state': 'queued'}}
+    assert watch.next_job(jobs, 100) is None
+    assert watch.next_job(jobs, 201) == '1:default'

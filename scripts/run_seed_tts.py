@@ -39,8 +39,40 @@ def offline_environment():
     return env
 
 
+def wait_for_worker_memory(commands, timeout=300):
+    """Recheck each wave; let the watcher reselect devices after a bounded wait."""
+    required = {}
+    for label, command, gpu in commands:
+        if "--gpu-memory-gib" in command:
+            budget = float(command[command.index("--gpu-memory-gib") + 1])
+            reserve = float(command[command.index("--gpu-reserve-gib") + 1])
+        else:
+            # Scoring includes ASR and WavLM; long waveforms need extra headroom.
+            budget, reserve = 20.0, 6.0
+        workers, previous_reserve = required.get(gpu, (0.0, 0.0))
+        required[gpu] = (workers + budget, max(previous_reserve, reserve))
+    deadline = time.monotonic() + timeout
+    while required:
+        output = subprocess.check_output([
+            "nvidia-smi", "--query-gpu=index,memory.free",
+            "--format=csv,noheader,nounits"], text=True)
+        free = {i.strip(): int(m) for i, m in
+                (line.split(",") for line in output.splitlines())}
+        shortage = {gpu: {"free_mib": free.get(gpu, 0),
+                          "required_mib": int((budget + reserve) * 1024)}
+                    for gpu, (budget, reserve) in required.items()
+                    if free.get(gpu, 0) < (budget + reserve) * 1024}
+        if not shortage:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"GPU memory wait expired; reselect devices: {shortage}")
+        print(f"Waiting for worker GPU memory: {shortage}", flush=True)
+        time.sleep(15)
+
+
 def parallel(commands, env, log_dir):
     """Stop sibling evaluation workers if any worker fails; logs remain resumable."""
+    wait_for_worker_memory(commands)
     processes, logs = [], []
     try:
         for label, command, gpu in commands:

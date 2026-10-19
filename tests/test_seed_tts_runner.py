@@ -114,3 +114,19 @@ def test_mixed_parameters_forwarded_and_resume_identity_is_fixed(runner):
     runner(mixed=True)
     with pytest.raises(ValueError, match="Run identity changed"):
         runner(mixed=False)
+
+
+def test_wave_memory_accounts_for_all_workers_and_waits(monkeypatch):
+    readings = iter(['0, 10000\n', '0, 40000\n'])
+    monkeypatch.setattr(run_seed_tts.subprocess, 'check_output', lambda *a, **k: next(readings))
+    sleeps = []
+    monkeypatch.setattr(run_seed_tts.time, 'sleep', sleeps.append)
+    command = ['infer', '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6']
+    run_seed_tts.wait_for_worker_memory([('a', command, '0'), ('b', command, '0')])
+    assert sleeps == [15]
+
+
+def test_wave_memory_timeout_requests_reselection(monkeypatch):
+    monkeypatch.setattr(run_seed_tts.subprocess, 'check_output', lambda *a, **k: '0, 1000\n')
+    with pytest.raises(RuntimeError, match='reselect devices'):
+        run_seed_tts.wait_for_worker_memory([('score', ['score'], '0')], timeout=0)
