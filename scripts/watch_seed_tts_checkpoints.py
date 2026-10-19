@@ -65,7 +65,7 @@ def busy(run):
 def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
     suffix = "default-sampling" if variant == "default" else "talkert03-k10-rp2-cpgreedy"
-    run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-4gpu"
+    run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-{config.get('run_suffix', '4gpu')}"
     return model, run
 
 
@@ -102,7 +102,7 @@ def select_gpus(config):
     eligible = [gpu for gpu in config.get('gpu_candidates', config['gpus'])
                 if free[gpu] >= config['minimum_free_gib'] * 1024]
     count = len(config['gpus'])
-    if len(eligible) < count:
+    if len(eligible) < config.get('minimum_gpus', count):
         return None
     # Select by current free memory; logical inference partitions stay unchanged.
     return sorted(sorted(eligible, key=lambda gpu: (-free[gpu], gpu))[:count])

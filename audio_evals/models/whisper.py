@@ -135,7 +135,10 @@ class SeedTTSWhisperModel(OfflineModel):
             try:
                 for stream in rlist:
                     if stream == self.process.stdout:
-                        result = self.process.stdout.readline().strip()
+                        result = self.process.stdout.readline()
+                        if not result:
+                            raise RuntimeError("Seed-TTS Whisper process closed stdout before returning a result; inspect its stderr log")
+                        result = result.strip()
                         if not result:
                             continue
                         if result.startswith(prefix):

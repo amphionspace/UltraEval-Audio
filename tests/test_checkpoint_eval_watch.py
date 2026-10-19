@@ -157,3 +157,17 @@ def test_busy_preferred_gpu_does_not_block_available_alternatives(monkeypatch):
     for gpu in [2, 3, 5, 6]:
         free[gpu] = 0
     assert watch.select_gpus(config) is None
+
+
+def test_elastic_gpu_selection_waits_below_minimum_and_expands_when_free(monkeypatch):
+    config = {'gpus': list(range(8)), 'gpu_candidates': list(range(8)),
+              'minimum_free_gib': 30, 'minimum_gpus': 4}
+    free = {i: 0 for i in range(8)}
+    monkeypatch.setattr(watch, 'gpu_memory', lambda: free)
+    for gpu in range(3):
+        free[gpu] = 40*1024
+    assert watch.select_gpus(config) is None
+    free[4] = free[6] = 40*1024
+    assert watch.select_gpus(config) == [0, 1, 2, 4, 6]
+    free.update({i: 40*1024 for i in range(8)})
+    assert watch.select_gpus(config) == list(range(8))
