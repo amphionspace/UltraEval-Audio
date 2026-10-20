@@ -64,7 +64,10 @@ def busy(run):
 
 def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
-    suffix = "default-sampling" if variant == "default" else "talkert03-k10-rp2-cpgreedy"
+    base = variant.removesuffix("_explicit")
+    suffix = "default-sampling" if base == "default" else "talkert03-k10-rp2-cpgreedy"
+    if variant.endswith("_explicit"):
+        suffix += "-explicit-language"
     run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-{config.get('run_suffix', '4gpu')}"
     return model, run
 
@@ -173,7 +176,9 @@ def run_job(config, step, variant="default"):
                    '--gpus', gpus, '--workers-per-gpu', str(config.get('workers_per_gpu', 4)), '--inference-shards', '32',
                    '--score-gpus', gpus, '--score-workers-per-gpu', str(config.get('score_workers_per_gpu', 1)), '--batch-size', '1',
                    '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6', '--max-audio-seconds', '30']
-        if variant == 'mixed':
+        if variant.endswith('_explicit'):
+            command.extend(['--language', 'explicit'])
+        if variant.removesuffix('_explicit') == 'mixed':
             command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
                             '--talker-top-k', '10', '--talker-repetition-penalty', '2',
                             '--code-predictor-greedy'])
@@ -191,7 +196,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
-    parser.add_argument('--variant', choices=['default', 'mixed'], default='default')
+    parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit'],
+                        default='default')
     parser.add_argument('--gpus', help='Physical GPU IDs selected for one job')
     args = parser.parse_args()
     config = json.loads(args.config.read_text())

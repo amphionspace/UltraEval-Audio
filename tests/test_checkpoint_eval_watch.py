@@ -59,7 +59,7 @@ def test_existing_pipeline_lock_defers_new_evaluation(tmp_path):
     assert not watch.busy(tmp_path)
 
 
-@pytest.mark.parametrize("variant", ["default", "mixed"])
+@pytest.mark.parametrize("variant", ["default", "mixed", "default_explicit", "mixed_explicit"])
 def test_job_reuses_export_and_launches_sampling_variant(tmp_path, monkeypatch, variant):
     config = {'checkpoint_dir': str(tmp_path / 'checkpoints'), 'model_root': str(tmp_path / 'models'),
               'model_prefix': 'emilia', 'run_root': str(tmp_path / 'runs'), 'run_prefix': 'emilia',
@@ -83,9 +83,13 @@ def test_job_reuses_export_and_launches_sampling_variant(tmp_path, monkeypatch, 
     command = calls[0]
     assert 'scripts.run_seed_tts' in command
     assert '--greedy' not in command
-    assert ('--code-predictor-greedy' in command) == (variant == 'mixed')
-    assert ('--talker-temperature' in command) == (variant == 'mixed')
-    if variant == 'mixed':
+    mixed = variant.startswith('mixed')
+    assert ('--code-predictor-greedy' in command) == mixed
+    assert ('--talker-temperature' in command) == mixed
+    explicit = variant.endswith('_explicit')
+    assert ('--language' in command) == explicit
+    assert run.name.endswith('-explicit-language-4gpu') == explicit
+    if mixed:
         assert command[command.index('--talker-temperature') + 1] == '0.3'
         assert command[command.index('--talker-repetition-penalty') + 1] == '2'
     assert command[command.index('--modes') + 1] == 'speaker_icl'

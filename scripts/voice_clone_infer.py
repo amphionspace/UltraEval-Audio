@@ -142,6 +142,9 @@ def main():
             raise ValueError("LFM inference requires batch size 1, non-streaming and Auto language")
         if exported_speaker != model_speaker:
             raise ValueError("Export and model config disagree on speaker conditioning")
+        trained_language = raw_config["talker_config"].get("lm_tts_language_conditioning", "auto")
+        if not args.language_auto and trained_language != "codec_language_id":
+            raise ValueError("This export never saw language IDs; pass --language-auto")
         if not exported_speaker and args.conditioning != "icl_only":
             raise ValueError("No-speaker checkpoints require --conditioning icl_only")
     if args.model_path and args.batch_size > 1:

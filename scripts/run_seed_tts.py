@@ -138,6 +138,8 @@ def main():
     parser.add_argument("--talker-top-k", type=int)
     parser.add_argument("--talker-repetition-penalty", type=float)
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
+    parser.add_argument("--language", choices=["auto", "explicit"], default="auto",
+                        help="auto omits language IDs; explicit passes English/Chinese (language-ID-trained exports only)")
     args = parser.parse_args()
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
@@ -170,10 +172,15 @@ def main():
         raise ValueError("No-speaker checkpoints require --modes icl_only")
     if digest(model / "model.safetensors") != report["weights_sha256"]:
         raise ValueError("Exported weights do not match export.json")
+    trained_language = json.loads((model / "config.json").read_text())["talker_config"].get(
+        "lm_tts_language_conditioning", "auto")
+    if args.language == "explicit" and trained_language != "codec_language_id":
+        raise ValueError("Explicit language IDs require an export trained with codec language IDs")
     state = {"checkpoint": report, "model_path": str(model), "gpus": gpus,
              "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
              "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
-             "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size}
+             "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size,
+             "language": args.language}
     decoding = {key: getattr(args, key) for key in ("code_predictor_greedy", "talker_temperature",
                 "talker_top_p", "talker_top_k", "talker_repetition_penalty")}
     state["decoding"] = decoding
@@ -184,6 +191,7 @@ def main():
                             "talker_top_p": None, "talker_top_k": None, "talker_repetition_penalty": None})
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
+        previous.setdefault("language", "auto")
         previous.setdefault("score_gpus", previous["gpus"])
         previous.setdefault("inference_shards", len(previous["gpus"]) * previous["workers_per_gpu"])
         # Logical partitions stay fixed while physical GPUs and concurrency can change.
@@ -227,7 +235,8 @@ def main():
                 for shard in range(shards):
                     cmd = [tts_python, "-u", "scripts/voice_clone_infer.py", "--model", mode,
                            "--model-path", str(model), "--conditioning", mode,
-                           "--non-streaming", "--language-auto", "--manifest-dir", str(manifests),
+                           "--non-streaming", *(["--language-auto"] if args.language == "auto" else []),
+                           "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
                            "--gpu-memory-gib", str(args.gpu_memory_gib),
                            "--gpu-reserve-gib", str(args.gpu_reserve_gib),
