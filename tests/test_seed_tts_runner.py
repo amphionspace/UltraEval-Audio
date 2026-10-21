@@ -11,6 +11,7 @@ from scripts import run_seed_tts
 def runner(tmp_path, monkeypatch):
     model = tmp_path / "model"
     model.mkdir()
+    (model / "config.json").write_text(json.dumps({"talker_config": {}}))
     (model / "model.safetensors").write_bytes(b"test weights")
     (model / "export.json").write_text(json.dumps({
         "use_speaker_embedding": False,
@@ -26,9 +27,10 @@ def runner(tmp_path, monkeypatch):
         commands.extend(batch)
         batches.append(batch)
     monkeypatch.setattr(run_seed_tts, "parallel", parallel)
-    monkeypatch.setattr(run_seed_tts.subprocess, "run", lambda *_, **__: None)
+    audits = []
+    monkeypatch.setattr(run_seed_tts.subprocess, "run", lambda command, **kwargs: audits.append(command))
 
-    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1, workers=1, shards=None, mixed=False):
+    def invoke(gpus="0,1,2,3,4,5,6,7", score_gpus="2,3,6,7", score_workers=1, workers=1, shards=None, mixed=False, language="auto"):
         monkeypatch.setattr(sys, "argv", ["runner", "--model-path", "model",
             "--run-dir", "run", "--modes", "icl_only", "--gpus", gpus,
             "--score-gpus", score_gpus, "--score-workers-per-gpu", str(score_workers), "--gpu-memory-gib", "4", "--gpu-reserve-gib", "0.5"])
@@ -38,9 +40,13 @@ def runner(tmp_path, monkeypatch):
         if mixed:
             sys.argv.extend(["--code-predictor-greedy", "--talker-temperature", "0.3", "--talker-top-p", "1",
                              "--talker-top-k", "10", "--talker-repetition-penalty", "2"])
+        if language == "explicit":
+            (model / "config.json").write_text(json.dumps({"talker_config": {"lm_tts_language_conditioning": "codec_language_id"}}))
+        sys.argv.extend(["--language", language])
         run_seed_tts.main()
         return commands
 
+    invoke.audits = audits
     invoke.batches = batches
     return invoke
 
@@ -130,3 +136,11 @@ def test_wave_memory_timeout_requests_reselection(monkeypatch):
     monkeypatch.setattr(run_seed_tts.subprocess, 'check_output', lambda *a, **k: '0, 1000\n')
     with pytest.raises(RuntimeError, match='reselect devices'):
         run_seed_tts.wait_for_worker_memory([('score', ['score'], '0')], timeout=0)
+
+
+@pytest.mark.parametrize("language", ["auto", "explicit"])
+def test_audit_receives_requested_language(runner, language):
+    runner(language=language)
+    commands = [c for c in runner.audits if "scripts/audit_voice_clone.py" in c]
+    assert len(commands) == 2
+    assert all(c[c.index("--language") + 1] == language for c in commands)

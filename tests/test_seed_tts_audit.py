@@ -319,3 +319,28 @@ def test_independent_code_predictor_greedy_is_audited(tmp_path, monkeypatch, act
             audit_voice_clone.main()
     else:
         audit_voice_clone.main()
+
+
+@pytest.mark.parametrize("expected,actual,trained,passes", [
+    ("auto", True, "auto", True),
+    ("auto", False, "codec_language_id", False),
+    ("explicit", True, "codec_language_id", False),
+    ("explicit", False, "auto", False),
+    ("explicit", False, "codec_language_id", True),
+])
+def test_language_protocol(tmp_path, monkeypatch, expected, actual, trained, passes):
+    inputs, run, model, _ = setup_run(tmp_path)
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "config.json").write_text(json.dumps({"talker_config": {"lm_tts_language_conditioning": trained}}))
+    path = model / "settings-00.json"
+    cfg = json.loads(path.read_text())
+    cfg.update(model_path=str(export), language_auto=actual)
+    path.write_text(json.dumps(cfg))
+    monkeypatch.setattr(sys, "argv", ["audit", "--run-dir", str(run), "--manifest-dir", str(inputs),
+        "--models", "speaker_only", "--num-shards", "1", "--language", expected])
+    if passes:
+        audit_voice_clone.main()
+    else:
+        with pytest.raises(ValueError):
+            audit_voice_clone.main()

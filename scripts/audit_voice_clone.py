@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-shards", type=int, default=8)
     parser.add_argument("--output-name")
+    parser.add_argument("--language", choices=["auto", "explicit"], default="auto")
     parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
@@ -138,7 +139,12 @@ def main():
                     require(cfg["sampling"].get("do_sample", True) == (not greedy)
                             and cfg["sampling"].get("subtalker_dosample", True) == (not (greedy or cfg.get("code_predictor_greedy", False))),
                             f"Sampling flags disagree with greedy setting: {file}")
-                    require(cfg["non_streaming"] and cfg["language_auto"], f"Training protocol: {file}")
+                    require(cfg["non_streaming"] and cfg["language_auto"] == (args.language == "auto"),
+                            f"Training protocol/language mismatch: {file}")
+                    if args.language == "explicit":
+                        model_config = json.loads((Path(cfg["model_path"]) / "config.json").read_text())
+                        require(model_config["talker_config"].get("lm_tts_language_conditioning") == "codec_language_id",
+                                f"Explicit language requires language-ID-trained model: {file}")
                     for key, row in generated.items():
                         if row["index"] % args.num_shards == shard:
                             require(row.get("conditioning_verified") == {"speaker_embedding": not icl_only, "icl_calls": 0 if xvec else row["batch_size"]},

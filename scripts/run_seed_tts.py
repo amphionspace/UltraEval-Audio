@@ -282,7 +282,7 @@ def main():
                       "--max-audio-seconds", str(args.max_audio_seconds), "--models", *args.modes]
             subprocess.run([metric_python, "scripts/summarize_voice_clone.py", *common], cwd=ROOT, env=env, check=True)
             audit = [metric_python, "scripts/audit_voice_clone.py", *common,
-                     "--num-shards", str(shards), "--batch-size", str(args.batch_size), "--output-name", "audit.json"]
+                     "--num-shards", str(shards), "--batch-size", str(args.batch_size), "--output-name", "audit.json", "--language", args.language]
             if args.greedy:
                 audit.append("--expect-greedy")
             subprocess.run(audit, cwd=ROOT, env=env, check=True)
