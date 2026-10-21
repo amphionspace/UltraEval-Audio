@@ -140,6 +140,8 @@ def main():
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     parser.add_argument("--language", choices=["auto", "explicit"], default="auto",
                         help="auto omits language IDs; explicit passes English/Chinese (language-ID-trained exports only)")
+    parser.add_argument("--benchmark", choices=["seed", "cv3"], default="seed",
+                        help="cv3 runs the four CV3-Eval zero-shot splits (normal and hard, en/zh) without a smoke phase")
     args = parser.parse_args()
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
@@ -180,7 +182,7 @@ def main():
              "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
              "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size,
-             "language": args.language}
+             "language": args.language, "benchmark": args.benchmark}
     decoding = {key: getattr(args, key) for key in ("code_predictor_greedy", "talker_temperature",
                 "talker_top_p", "talker_top_k", "talker_repetition_penalty")}
     state["decoding"] = decoding
@@ -192,6 +194,7 @@ def main():
         previous.setdefault("greedy", False)
         previous.setdefault("batch_size", 1)
         previous.setdefault("language", "auto")
+        previous.setdefault("benchmark", "seed")
         previous.setdefault("score_gpus", previous["gpus"])
         previous.setdefault("inference_shards", len(previous["gpus"]) * previous["workers_per_gpu"])
         # Logical partitions stay fixed while physical GPUs and concurrency can change.
@@ -215,7 +218,8 @@ def main():
     env["AUDIO_EVALS_RUNTIME_LOG_DIR"] = str(logs)
     tts_python = str(ROOT / "envs/tts/bin/python")
     metric_python = str(ROOT / "envs/metrics/bin/python")
-    prepare_smoke_manifests(run / "smoke_inputs")
+    if args.benchmark == "seed":
+        prepare_smoke_manifests(run / "smoke_inputs")
     def status(phase):
         state.update(state=phase, updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         (run / "pipeline_status.json").write_text(json.dumps(state, indent=2))
@@ -224,10 +228,11 @@ def main():
         raise InterruptedError("Evaluation interrupted")
     signal.signal(signal.SIGTERM, stop)
     try:
-        for phase in (["smoke"] if args.smoke_only else ["smoke", "full"]):
+        phases = ["smoke"] if args.smoke_only else ["smoke", "full"]
+        for phase in (phases if args.benchmark == "seed" else ["full"]):
             output = run / phase
             output.mkdir(exist_ok=True)
-            manifests = run / "smoke_inputs" if phase == "smoke" else ROOT / "raw_data/seed_tts_manifests"
+            manifests = run / "smoke_inputs" if phase == "smoke" else ROOT / {"seed": "raw_data/seed_tts_manifests", "cv3": "raw_data/cv3_manifests"}[args.benchmark]
             shards = 1 if phase == "smoke" else inference_shards
             for mode in args.modes:
                 status(f"{phase}:inference:{mode}")
@@ -267,7 +272,7 @@ def main():
                     language_gpus = language_gpus * args.score_workers_per_gpu
                 for shard, gpu in enumerate(language_gpus):
                     commands.append((f"{phase}-score-{lang}-{shard:02d}",
-                        [metric_python, "-u", "scripts/voice_clone_score.py", "--group", "seed",
+                        [metric_python, "-u", "scripts/voice_clone_score.py", "--group", args.benchmark,
                          "--language", lang, "--run-dir", str(output), "--workers", str(len(language_gpus)),
                          "--shard", str(shard), "--max-audio-seconds", str(args.max_audio_seconds),
                          "--models", *args.modes], gpu))

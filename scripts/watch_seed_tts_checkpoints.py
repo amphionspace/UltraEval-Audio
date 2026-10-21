@@ -62,13 +62,22 @@ def busy(run):
     return False
 
 
+def combined_layout(config, step):
+    return step >= config.get('combined_from_step', float('inf'))
+
+
 def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
-    base = variant.removesuffix("_explicit")
+    base = variant.removesuffix("_cv3").removesuffix("_explicit")
     suffix = "default-sampling" if base == "default" else "talkert03-k10-rp2-cpgreedy"
-    if variant.endswith("_explicit"):
+    if "_explicit" in variant:
         suffix += "-explicit-language"
-    run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-{config.get('run_suffix', '4gpu')}"
+    if combined_layout(config, step):
+        # One directory per checkpoint and decoding setting, one subdirectory per benchmark.
+        run = (Path(config['run_root']) / f"{config['run_prefix']}-step{step}-{suffix}-{config.get('run_suffix', '4gpu')}"
+               / ('cv3' if variant.endswith('_cv3') else 'seed_tts'))
+    else:
+        run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-{config.get('run_suffix', '4gpu')}"
     return model, run
 
 
@@ -81,9 +90,11 @@ def migrate_jobs(jobs):
     return migrated
 
 
-def register_jobs(jobs, steps, variants, now):
+def register_jobs(jobs, steps, variants, now, config):
     for step in steps:
         for variant in variants:
+            if variant.endswith('_cv3') and not combined_layout(config, step):
+                continue
             jobs.setdefault(f"{step}:{variant}", {"step": step, "variant": variant,
                 "state": "queued", "discovered_at": now, "attempts": 0})
 
@@ -175,10 +186,13 @@ def run_job(config, step, variant="default"):
                    '--model-path', str(model), '--run-dir', str(run), '--modes', 'speaker_icl',
                    '--gpus', gpus, '--workers-per-gpu', str(config.get('workers_per_gpu', 4)), '--inference-shards', '32',
                    '--score-gpus', gpus, '--score-workers-per-gpu', str(config.get('score_workers_per_gpu', 1)), '--batch-size', '1',
-                   '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6', '--max-audio-seconds', '30']
-        if variant.endswith('_explicit'):
+                   '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6']
+        # CV3 follows the replication protocol: no duration cap (generation stops at max_new_tokens).
+        command.extend(['--benchmark', 'cv3', '--max-audio-seconds', '0'] if variant.endswith('_cv3')
+                       else ['--max-audio-seconds', '30'])
+        if '_explicit' in variant:
             command.extend(['--language', 'explicit'])
-        if variant.removesuffix('_explicit') == 'mixed':
+        if variant.removesuffix('_cv3').removesuffix('_explicit') == 'mixed':
             command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
                             '--talker-top-k', '10', '--talker-repetition-penalty', '2',
                             '--code-predictor-greedy'])
@@ -196,7 +210,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
-    parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit'],
+    parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit', 'default_cv3', 'default_explicit_cv3'],
                         default='default')
     parser.add_argument('--gpus', help='Physical GPU IDs selected for one job')
     args = parser.parse_args()
@@ -235,7 +249,7 @@ def main():
                     child_log.close()
                     child, child_log, active = None, None, None
                 ready, errors = discover_checkpoints(Path(config['checkpoint_dir']), config['after_step'])
-                register_jobs(jobs, ready, config.get('variants', ['default', 'mixed']), now)
+                register_jobs(jobs, ready, config.get('variants', ['default', 'mixed']), now, config)
                 for key, job in jobs.items():
                     _, run = job_paths(config, job['step'], job['variant'])
                     if key != active and completed(run):
