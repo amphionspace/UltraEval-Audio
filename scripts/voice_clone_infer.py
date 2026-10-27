@@ -223,17 +223,18 @@ def main():
             (output_dir / f"conditioning-verified-{args.shard:02d}.json").write_text(json.dumps(validation, indent=2))
             return result
 
-    elif (model_family == "qwen3_tts" and not args.non_streaming
+    elif (model_family == "qwen3_tts"
           and raw_config["talker_config"].get("lm_tts_streaming_layout") == "interleaved"):
-        from local_interleaved import InterleavedVoiceClone
+        from local_qwen import LmTtsQwenVoiceClone
 
         if args.batch_size != 1:
-            raise ValueError("Interleaved streaming inference requires batch size 1")
+            raise ValueError("LM-TTS Qwen inference requires batch size 1")
         args.fast = False
-        adapter = InterleavedVoiceClone(model_dir, conditioning=args.conditioning,
-                                        max_audio_seconds=args.max_audio_seconds,
-                                        sampling=qwen_generation_params(args),
-                                        language_auto=args.language_auto)
+        # Both layouts use LM-TTS's decoder, so the comparison holds the decoder fixed.
+        adapter = LmTtsQwenVoiceClone(model_dir, conditioning=args.conditioning,
+                                      max_audio_seconds=args.max_audio_seconds,
+                                      sampling=qwen_generation_params(args),
+                                      language_auto=args.language_auto, streaming=not args.non_streaming)
         params, paths_used, decoder = adapter.params, adapter.paths_used, adapter.decoder
 
         def generate(batch, seed):

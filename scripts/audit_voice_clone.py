@@ -142,12 +142,12 @@ def main():
                             f"Sampling flags disagree with greedy setting: {file}")
                     require(cfg["non_streaming"] == (not args.streaming) and cfg["language_auto"] == (args.language == "auto"),
                             f"Training protocol/language mismatch: {file}")
-                    if args.streaming:
-                        talker = json.loads((Path(cfg["model_path"]) / "config.json").read_text())["talker_config"]
-                        expected = ("lm_tts_interleaved" if talker.get("lm_tts_streaming_layout") == "interleaved"
-                                    else "qwen_tts")
-                        require((cfg.get("decoder") or {}).get("name") == expected,
-                                f"Streaming decoder does not match the export's layout: {file}")
+                    talker = json.loads((Path(cfg["model_path"]) / "config.json").read_text())["talker_config"]
+                    decoder = (cfg.get("decoder") or {}).get("name")
+                    # Older settings predate the decoder field; they all used official qwen_tts.
+                    require(decoder == "lm_tts" if talker.get("lm_tts_streaming_layout") == "interleaved"
+                            else decoder in (None, "qwen_tts"),
+                            f"Decoder does not match the export's layout: {file}")
                     if args.language == "explicit":
                         model_config = json.loads((Path(cfg["model_path"]) / "config.json").read_text())
                         require(model_config["talker_config"].get("lm_tts_language_conditioning") == "codec_language_id",
