@@ -39,7 +39,7 @@ def offline_environment():
     return env
 
 
-def wait_for_worker_memory(commands, timeout=300):
+def wait_for_worker_memory(commands, score, timeout=300):
     """Recheck each wave; let the watcher reselect devices after a bounded wait."""
     required = {}
     for label, command, gpu in commands:
@@ -48,7 +48,7 @@ def wait_for_worker_memory(commands, timeout=300):
             reserve = float(command[command.index("--gpu-reserve-gib") + 1])
         else:
             # Scoring includes ASR and WavLM; long waveforms need extra headroom.
-            budget, reserve = 20.0, 6.0
+            budget, reserve = score
         workers, previous_reserve = required.get(gpu, (0.0, 0.0))
         required[gpu] = (workers + budget, max(previous_reserve, reserve))
     deadline = time.monotonic() + timeout
@@ -70,9 +70,9 @@ def wait_for_worker_memory(commands, timeout=300):
         time.sleep(15)
 
 
-def parallel(commands, env, log_dir):
+def parallel(commands, env, log_dir, score):
     """Stop sibling evaluation workers if any worker fails; logs remain resumable."""
-    wait_for_worker_memory(commands)
+    wait_for_worker_memory(commands, score)
     processes, logs = [], []
     try:
         for label, command, gpu in commands:
@@ -127,6 +127,9 @@ def main():
     parser.add_argument("--score-workers-per-gpu", type=int, default=1)
     parser.add_argument("--gpu-memory-gib", type=float, default=8, help="Per-inference-worker PyTorch allocation cap")
     parser.add_argument("--gpu-reserve-gib", type=float, default=2, help="Free memory reserve for each inference worker")
+    parser.add_argument("--score-memory-gib", type=float, default=20,
+                        help="Free memory admitted per scoring worker (ASR + WavLM), plus a 6 GiB reserve unless --score-reserve-gib")
+    parser.add_argument("--score-reserve-gib", type=float, default=6)
     parser.add_argument("--smoke-only", action="store_true")
     parser.add_argument("--inference-only", action="store_true", help="Generate audio now; rerun without this flag to score and audit")
     parser.add_argument("--wait-for-lock", action="store_true", help="Wait for an earlier phase in the same run directory")
@@ -216,6 +219,7 @@ def main():
     state["modes"] = args.modes
     state["max_audio_seconds"] = args.max_audio_seconds
     env = offline_environment()
+    score_memory = (args.score_memory_gib, args.score_reserve_gib)
     logs = run / "logs"
     logs.mkdir(exist_ok=True)
     env["AUDIO_EVALS_RUNTIME_LOG_DIR"] = str(logs)
@@ -263,7 +267,7 @@ def main():
                     commands.append((f"{phase}-{mode}-{shard:02d}", cmd, gpus[shard % len(gpus)]))
                 concurrency = len(gpus) * args.workers_per_gpu
                 for start in range(0, len(commands), concurrency):
-                    parallel(commands[start:start + concurrency], env, logs)
+                    parallel(commands[start:start + concurrency], env, logs, score_memory)
             if args.inference_only:
                 continue
             status(f"{phase}:scoring")
@@ -283,9 +287,9 @@ def main():
             # Each WavLM worker may need >18 GiB for a long generated waveform.
             if len(score_gpus) == 1:
                 for command in commands:
-                    parallel([command], env, logs)
+                    parallel([command], env, logs, score_memory)
             else:
-                parallel(commands, env, logs)
+                parallel(commands, env, logs, score_memory)
             status(f"{phase}:audit")
             common = ["--run-dir", str(output), "--manifest-dir", str(manifests),
                       "--max-audio-seconds", str(args.max_audio_seconds), "--models", *args.modes]

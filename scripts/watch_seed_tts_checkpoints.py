@@ -193,7 +193,9 @@ def run_job(config, step, variant="default"):
                    '--model-path', str(model), '--run-dir', str(run), '--modes', 'speaker_icl',
                    '--gpus', gpus, '--workers-per-gpu', str(config.get('workers_per_gpu', 4)), '--inference-shards', '32',
                    '--score-gpus', gpus, '--score-workers-per-gpu', str(config.get('score_workers_per_gpu', 1)), '--batch-size', '1',
-                   '--gpu-memory-gib', '6', '--gpu-reserve-gib', '6']
+                   '--gpu-memory-gib', '6', '--gpu-reserve-gib', str(config.get('gpu_reserve_gib', 6)),
+                   '--score-memory-gib', str(config.get('score_memory_gib', 20)),
+                   '--score-reserve-gib', str(config.get('gpu_reserve_gib', 6))]
         # CV3 follows the replication protocol: no duration cap (generation stops at max_new_tokens).
         command.extend(['--benchmark', 'cv3', '--max-audio-seconds', '0'] if variant.endswith('_cv3')
                        else ['--max-audio-seconds', '30'])
