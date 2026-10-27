@@ -1,0 +1,18 @@
+# ACP (SenseCore) settings for checkpoint evaluation jobs (copied from tts-data-pipeline configs/acp.yaml).
+# Credentials stay outside the repository in `home`/.credentials.json.
+region: cnsh01
+zone: cn-sh-01a
+workspace: workspace-whai
+cluster: cluster-whai
+worker_spec: N3lS.Ii.I60.80c896g  # one node: 8 A800 GPUs, 80 vCPU, 896 GiB
+image: registry.cn-sh-01.sensecore.cn/ccr-wh/amphion-base:amphion-base-20260923072955
+subscription: 01a0c34d-630a-719f-bef0-0ba5b6008878
+resource_group: default
+workspace_zone: cn-sh-01z
+api_endpoint: https://aec2.cn-sh-01.sensecoreapi.cn
+home: /workspace/workspace/yanglin/acp
+volume_id: 01a0c847-3d8d-7b42-8c75-50cbd189bb56
+mount_path: /workspace
+ssh_auto_key_setup: true
+# The node mounts only /workspace, so the interpreter must live there.
+python: /workspace/workspace/yanglin/UltraEval-Audio/envs/tts/bin/python
