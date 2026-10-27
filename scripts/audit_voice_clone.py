@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--num-shards", type=int, default=8)
     parser.add_argument("--output-name")
     parser.add_argument("--language", choices=["auto", "explicit"], default="auto")
+    parser.add_argument("--streaming", action="store_true", help="Require streaming text input for local checkpoints")
     parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
@@ -139,8 +140,14 @@ def main():
                     require(cfg["sampling"].get("do_sample", True) == (not greedy)
                             and cfg["sampling"].get("subtalker_dosample", True) == (not (greedy or cfg.get("code_predictor_greedy", False))),
                             f"Sampling flags disagree with greedy setting: {file}")
-                    require(cfg["non_streaming"] and cfg["language_auto"] == (args.language == "auto"),
+                    require(cfg["non_streaming"] == (not args.streaming) and cfg["language_auto"] == (args.language == "auto"),
                             f"Training protocol/language mismatch: {file}")
+                    if args.streaming:
+                        talker = json.loads((Path(cfg["model_path"]) / "config.json").read_text())["talker_config"]
+                        expected = ("lm_tts_interleaved" if talker.get("lm_tts_streaming_layout") == "interleaved"
+                                    else "qwen_tts")
+                        require((cfg.get("decoder") or {}).get("name") == expected,
+                                f"Streaming decoder does not match the export's layout: {file}")
                     if args.language == "explicit":
                         model_config = json.loads((Path(cfg["model_path"]) / "config.json").read_text())
                         require(model_config["talker_config"].get("lm_tts_language_conditioning") == "codec_language_id",

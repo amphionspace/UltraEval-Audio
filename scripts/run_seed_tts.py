@@ -142,6 +142,8 @@ def main():
                         help="auto omits language IDs; explicit passes English/Chinese (language-ID-trained exports only)")
     parser.add_argument("--benchmark", choices=["seed", "cv3"], default="seed",
                         help="cv3 runs the four CV3-Eval zero-shot splits (normal and hard, en/zh) without a smoke phase")
+    parser.add_argument("--streaming", action="store_true",
+                        help="Streaming text input in the layout the export was trained on (official overlay, or lm_tts interleaved chunks)")
     args = parser.parse_args()
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
@@ -182,7 +184,7 @@ def main():
              "score_gpus": score_gpus, "score_workers_per_gpu": args.score_workers_per_gpu, "gpu_reserve_gib": args.gpu_reserve_gib,
              "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size,
-             "language": args.language, "benchmark": args.benchmark}
+             "language": args.language, "benchmark": args.benchmark, "streaming": args.streaming}
     decoding = {key: getattr(args, key) for key in ("code_predictor_greedy", "talker_temperature",
                 "talker_top_p", "talker_top_k", "talker_repetition_penalty")}
     state["decoding"] = decoding
@@ -195,6 +197,7 @@ def main():
         previous.setdefault("batch_size", 1)
         previous.setdefault("language", "auto")
         previous.setdefault("benchmark", "seed")
+        previous.setdefault("streaming", False)
         previous.setdefault("score_gpus", previous["gpus"])
         previous.setdefault("inference_shards", len(previous["gpus"]) * previous["workers_per_gpu"])
         # Logical partitions stay fixed while physical GPUs and concurrency can change.
@@ -240,7 +243,8 @@ def main():
                 for shard in range(shards):
                     cmd = [tts_python, "-u", "scripts/voice_clone_infer.py", "--model", mode,
                            "--model-path", str(model), "--conditioning", mode,
-                           "--non-streaming", *(["--language-auto"] if args.language == "auto" else []),
+                           *([] if args.streaming else ["--non-streaming"]),
+                           *(["--language-auto"] if args.language == "auto" else []),
                            "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
                            "--gpu-memory-gib", str(args.gpu_memory_gib),
@@ -290,6 +294,8 @@ def main():
                      "--num-shards", str(shards), "--batch-size", str(args.batch_size), "--output-name", "audit.json", "--language", args.language]
             if args.greedy:
                 audit.append("--expect-greedy")
+            if args.streaming:
+                audit.append("--streaming")
             subprocess.run(audit, cwd=ROOT, env=env, check=True)
         status("inference_complete" if args.inference_only else ("smoke_passed" if args.smoke_only else "complete"))
     except BaseException as exc:

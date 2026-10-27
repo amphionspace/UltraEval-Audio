@@ -147,6 +147,16 @@ def main():
             raise ValueError("This export never saw language IDs; pass --language-auto")
         if not exported_speaker and args.conditioning != "icl_only":
             raise ValueError("No-speaker checkpoints require --conditioning icl_only")
+        if model_family == "qwen3_tts" and not args.non_streaming:
+            # The decoder follows the export's config; a stale export (one written by code that
+            # predates interleaving) would silently decode the overlay, so check the training run.
+            metadata = Path(identity["export"]["checkpoint"]) / "metadata.json"
+            trained = json.loads(metadata.read_text())["signature"].get("settings", {})
+            if not trained.get("streaming_fraction"):
+                raise ValueError("Streaming decoding requires an export trained on streaming rows")
+            exported = raw_config["talker_config"].get("lm_tts_streaming_layout", "overlay")
+            if exported != trained.get("streaming_layout", "overlay"):
+                raise ValueError("Export config disagrees with the trained streaming layout; re-export")
     if args.model_path and args.batch_size > 1:
         identity["codec_batch_size"] = 1
     receipt = output_dir / f"invocation-{args.shard:02d}.json"
@@ -198,6 +208,7 @@ def main():
         effective_budget_gib = budget / 1024**3
         print(f"Requested GPU budget={args.gpu_memory_gib} GiB; effective={effective_budget_gib:.2f} GiB", flush=True)
     paths_used = {}
+    decoder = None
     if model_family == "lfm2_tts":
         from local_lfm import LfmVoiceClone
 
@@ -212,7 +223,27 @@ def main():
             (output_dir / f"conditioning-verified-{args.shard:02d}.json").write_text(json.dumps(validation, indent=2))
             return result
 
+    elif (model_family == "qwen3_tts" and not args.non_streaming
+          and raw_config["talker_config"].get("lm_tts_streaming_layout") == "interleaved"):
+        from local_interleaved import InterleavedVoiceClone
+
+        if args.batch_size != 1:
+            raise ValueError("Interleaved streaming inference requires batch size 1")
+        args.fast = False
+        adapter = InterleavedVoiceClone(model_dir, conditioning=args.conditioning,
+                                        max_audio_seconds=args.max_audio_seconds,
+                                        sampling=qwen_generation_params(args),
+                                        language_auto=args.language_auto)
+        params, paths_used, decoder = adapter.params, adapter.paths_used, adapter.decoder
+
+        def generate(batch, seed):
+            result = adapter.generate(batch, seed)
+            validation = {**paths_used, "batch_size": len(batch), "model": args.model}
+            (output_dir / f"conditioning-verified-{args.shard:02d}.json").write_text(json.dumps(validation, indent=2))
+            return result
+
     elif args.model_path or args.model.startswith("qwen"):
+        decoder = {"name": "qwen_tts"}
         args.fast = False  # Qwen uses the native SDPA path, not Breeze's fast runtime.
         from qwen_tts import Qwen3TTSModel
         model = Qwen3TTSModel.from_pretrained(str(model_dir), device_map="cuda:0",
@@ -309,7 +340,7 @@ def main():
         history.mkdir(exist_ok=True)
         if not (history / settings_path.name).exists():
             (history / settings_path.name).write_bytes(settings_path.read_bytes())
-    settings_path.write_text(json.dumps({**vars(args), "sampling": params,
+    settings_path.write_text(json.dumps({**vars(args), "sampling": params, "decoder": decoder,
         "codec_batch_size": 1 if args.model_path else args.batch_size,
         "icl_only_ablation": args.conditioning == "icl_only" if args.model_path else args.model.endswith("-icl_only"),
         "torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)}, indent=2))

@@ -68,8 +68,10 @@ def combined_layout(config, step):
 
 def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
-    base = variant.removesuffix("_cv3").removesuffix("_explicit")
+    base = variant.removesuffix("_cv3").removesuffix("_explicit").removesuffix("_streaming")
     suffix = "default-sampling" if base == "default" else "talkert03-k10-rp2-cpgreedy"
+    if "_streaming" in variant:
+        suffix += "-streaming"
     if "_explicit" in variant:
         suffix += "-explicit-language"
     if combined_layout(config, step):
@@ -192,7 +194,9 @@ def run_job(config, step, variant="default"):
                        else ['--max-audio-seconds', '30'])
         if '_explicit' in variant:
             command.extend(['--language', 'explicit'])
-        if variant.removesuffix('_cv3').removesuffix('_explicit') == 'mixed':
+        if '_streaming' in variant:
+            command.append('--streaming')
+        if variant.removesuffix('_cv3').removesuffix('_explicit').removesuffix('_streaming') == 'mixed':
             command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
                             '--talker-top-k', '10', '--talker-repetition-penalty', '2',
                             '--code-predictor-greedy'])
@@ -210,7 +214,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
-    parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit', 'default_cv3', 'default_explicit_cv3'],
+    parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit', 'default_cv3', 'default_explicit_cv3',
+                                                  'default_streaming', 'mixed_streaming'],
                         default='default')
     parser.add_argument('--gpus', help='Physical GPU IDs selected for one job')
     args = parser.parse_args()
