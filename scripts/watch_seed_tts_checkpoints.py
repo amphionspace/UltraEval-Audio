@@ -101,13 +101,16 @@ def register_jobs(jobs, steps, variants, now, config):
                 "state": "queued", "discovered_at": now, "attempts": 0})
 
 
-def next_job(jobs, now):
+def next_job(jobs, now, variants):
     eligible = [key for key, job in jobs.items()
                 if job['state'] != 'complete' and job.get('retry_at', 0) <= now
                 and not (job['variant'] == 'mixed'
                          and f"{job['step']}:default" in jobs
                          and jobs[f"{job['step']}:default"]['state'] != 'complete')]
-    return min(eligible, key=lambda key: (jobs[key]['step'], jobs[key]['variant'] != 'default')) if eligible else None
+    # Within a step, variants run in the configured order.
+    order = lambda key: (jobs[key]['step'], variants.index(jobs[key]['variant'])
+                         if jobs[key]['variant'] in variants else len(variants))
+    return min(eligible, key=order) if eligible else None
 
 
 def gpu_memory():
@@ -117,7 +120,9 @@ def gpu_memory():
 
 
 def required_free_gib(config):
-    """Use the same per-wave budgets as the runner for device admission."""
+    """Use the same per-wave budgets as the runner for device admission, unless set explicitly."""
+    if 'required_free_gib' in config:
+        return config['required_free_gib']
     return max(config['minimum_free_gib'],
                config.get('workers_per_gpu', 4) * 6 + 6,
                config.get('score_workers_per_gpu', 1) * 20 + 6)
@@ -260,7 +265,7 @@ def main():
                     if key != active and completed(run):
                         job['state'] = 'complete'
                 status = 'evaluating' if child else 'waiting_checkpoint'
-                key = next_job(jobs, now) if child is None else None
+                key = next_job(jobs, now, config.get('variants', ['default', 'mixed'])) if child is None else None
                 if key is not None:
                     job = jobs[key]
                     step, variant = job['step'], job['variant']
