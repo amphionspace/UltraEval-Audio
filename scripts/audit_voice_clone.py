@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--output-name")
     parser.add_argument("--language", choices=["auto", "explicit"], default="auto")
     parser.add_argument("--streaming", action="store_true", help="Require streaming text input for local checkpoints")
+    parser.add_argument("--reference-lead", action="store_true", help="Require the reference-lead streaming layout")
     parser.add_argument("--expect-greedy", action="store_true", help="Require both Qwen sampling flags to be false")
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     args = parser.parse_args()
@@ -142,6 +143,8 @@ def main():
                             f"Sampling flags disagree with greedy setting: {file}")
                     require(cfg["non_streaming"] == (not args.streaming) and cfg["language_auto"] == (args.language == "auto"),
                             f"Training protocol/language mismatch: {file}")
+                    require(cfg["sampling"].get("reference_lead", False) == args.reference_lead,
+                            f"Reference-lead layout mismatch: {file}")
                     talker = json.loads((Path(cfg["model_path"]) / "config.json").read_text())["talker_config"]
                     decoder = (cfg.get("decoder") or {}).get("name")
                     # Older settings predate the decoder field; they all used official qwen_tts.

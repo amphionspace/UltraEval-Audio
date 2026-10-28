@@ -74,6 +74,8 @@ def main():
     parser.add_argument("--model-path", help="Exported local Qwen3-TTS or LFM-TTS checkpoint")
     parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl", "icl_only"])
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
+    parser.add_argument("--reference-lead", action="store_true",
+                        help="LM-TTS interleaved streaming: whole ICL reference text and reference before the target chunks")
     parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
     parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
     parser.add_argument("--code-predictor-greedy", action="store_true", help="Qwen only: disable Code Predictor sampling independently")
@@ -234,7 +236,8 @@ def main():
         adapter = LmTtsQwenVoiceClone(model_dir, conditioning=args.conditioning,
                                       max_audio_seconds=args.max_audio_seconds,
                                       sampling=qwen_generation_params(args),
-                                      language_auto=args.language_auto, streaming=not args.non_streaming)
+                                      language_auto=args.language_auto, streaming=not args.non_streaming,
+                                      reference_lead=args.reference_lead)
         params, paths_used, decoder = adapter.params, adapter.paths_used, adapter.decoder
 
         def generate(batch, seed):
