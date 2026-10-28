@@ -12,7 +12,7 @@ import torch
 
 class LmTtsQwenVoiceClone:
     def __init__(self, model_dir, *, conditioning, max_audio_seconds, sampling, language_auto, streaming,
-                 reference_lead=False):
+                 reference_lead=None):
         if conditioning != "speaker_icl":
             raise ValueError("LM-TTS decoding supports speaker_icl conditioning")
         project = Path(__file__).resolve().parents[2] / "LM-TTS-Training"
@@ -34,10 +34,10 @@ class LmTtsQwenVoiceClone:
         # Official generate blocks EOS for the first two frames.
         self.params = {**sampling, "min_new_tokens": 2, "x_vector_only_mode": False,
                        "non_streaming_mode": not streaming}
-        if reference_lead:
+        if reference_lead is not None:
             if not streaming:
                 raise ValueError("reference_lead requires streaming")
-            self.params["reference_lead"] = True
+            self.params["reference_lead"] = reference_lead
         if max_audio_seconds:
             codec = json.loads((Path(model_dir) / "speech_tokenizer/config.json").read_text())
             rate = codec["output_sample_rate"] / codec["decode_upsample_rate"]
@@ -60,7 +60,7 @@ class LmTtsQwenVoiceClone:
         wav, rate = self.synth.synthesize(
             row["text"], row["prompt_audio"], row["prompt_text"], streaming=self.streaming,
             language_codec_id=language, penalize_reference=False, use_cache=True,
-            reference_lead=self.params.get("reference_lead", False), **settings,
+            reference_lead=self.params.get("reference_lead"), **settings,
         )
         self.paths_used.clear()
         self.paths_used.update(self.synth.last_conditioning)

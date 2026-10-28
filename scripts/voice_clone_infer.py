@@ -74,8 +74,8 @@ def main():
     parser.add_argument("--model-path", help="Exported local Qwen3-TTS or LFM-TTS checkpoint")
     parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl", "icl_only"])
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
-    parser.add_argument("--reference-lead", action="store_true",
-                        help="LM-TTS interleaved streaming: whole ICL reference text and reference before the target chunks")
+    parser.add_argument("--reference-lead", type=int, metavar="TARGET_TOKENS",
+                        help="LM-TTS interleaved streaming: ICL reference text plus this many target tokens, then the reference, before the target chunks")
     parser.add_argument("--language-auto", action="store_true", help="Omit explicit language IDs, matching Auto training")
     parser.add_argument("--greedy", action="store_true", help="Disable sampling in both Qwen Talker and Code Predictor")
     parser.add_argument("--code-predictor-greedy", action="store_true", help="Qwen only: disable Code Predictor sampling independently")

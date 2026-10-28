@@ -147,11 +147,11 @@ def main():
                         help="cv3 runs the four CV3-Eval zero-shot splits (normal and hard, en/zh) without a smoke phase")
     parser.add_argument("--streaming", action="store_true",
                         help="Streaming text input in the layout the export was trained on (official overlay, or lm_tts interleaved chunks)")
-    parser.add_argument("--reference-lead", action="store_true",
-                        help="Interleaved streaming only: place the whole ICL reference text, then the reference, before the 5:10 target chunks (never trained)")
+    parser.add_argument("--reference-lead", type=int, metavar="TARGET_TOKENS",
+                        help="Interleaved streaming only: place the whole ICL reference text plus this many target tokens, then the reference, before the 5:10 target chunks (never trained)")
     args = parser.parse_args()
-    if args.reference_lead and not args.streaming:
-        parser.error("--reference-lead requires --streaming")
+    if args.reference_lead is not None and (not args.streaming or args.reference_lead < 0):
+        parser.error("--reference-lead requires --streaming and a nonnegative count")
     if args.max_audio_seconds < 0:
         parser.error("max-audio-seconds must be nonnegative")
     gpus = args.gpus.split(",")
@@ -192,7 +192,7 @@ def main():
              "inference_shards": inference_shards, "workers_per_gpu": args.workers_per_gpu, "gpu_memory_gib": args.gpu_memory_gib,
              "greedy": args.greedy, "state": "starting", "batch_size": args.batch_size,
              "language": args.language, "benchmark": args.benchmark, "streaming": args.streaming,
-             **({"reference_lead": True} if args.reference_lead else {})}
+             **({"reference_lead": args.reference_lead} if args.reference_lead is not None else {})}
     decoding = {key: getattr(args, key) for key in ("code_predictor_greedy", "talker_temperature",
                 "talker_top_p", "talker_top_k", "talker_repetition_penalty")}
     state["decoding"] = decoding
@@ -253,7 +253,7 @@ def main():
                     cmd = [tts_python, "-u", "scripts/voice_clone_infer.py", "--model", mode,
                            "--model-path", str(model), "--conditioning", mode,
                            *([] if args.streaming else ["--non-streaming"]),
-                           *(["--reference-lead"] if args.reference_lead else []),
+                           *(["--reference-lead", str(args.reference_lead)] if args.reference_lead is not None else []),
                            *(["--language-auto"] if args.language == "auto" else []),
                            "--manifest-dir", str(manifests),
                            "--run-dir", str(output), "--num-shards", str(shards), "--shard", str(shard),
@@ -306,8 +306,8 @@ def main():
                 audit.append("--expect-greedy")
             if args.streaming:
                 audit.append("--streaming")
-            if args.reference_lead:
-                audit.append("--reference-lead")
+            if args.reference_lead is not None:
+                audit.extend(["--reference-lead", str(args.reference_lead)])
             subprocess.run(audit, cwd=ROOT, env=env, check=True)
         status("inference_complete" if args.inference_only else ("smoke_passed" if args.smoke_only else "complete"))
     except BaseException as exc:
