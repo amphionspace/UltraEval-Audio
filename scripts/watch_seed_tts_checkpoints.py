@@ -66,9 +66,17 @@ def combined_layout(config, step):
     return step >= config.get('combined_from_step', float('inf'))
 
 
+def base_variant(variant):
+    return variant.removesuffix("_cv3hard").removesuffix("_cv3").removesuffix("_explicit").removesuffix("_streaming")
+
+
+def benchmark_dir(variant):
+    return {'_cv3': 'cv3', '_cv3hard': 'cv3_hard'}.get('_' + variant.rsplit('_', 1)[-1], 'seed_tts')
+
+
 def job_paths(config, step, variant="default"):
     model = Path(config['model_root']) / f"{config['model_prefix']}-step-{step:08d}"
-    base = variant.removesuffix("_cv3").removesuffix("_explicit").removesuffix("_streaming")
+    base = base_variant(variant)
     suffix = "default-sampling" if base == "default" else "talkert03-k10-rp2-cpgreedy"
     if "_streaming" in variant:
         suffix += "-streaming"
@@ -77,7 +85,7 @@ def job_paths(config, step, variant="default"):
     if combined_layout(config, step):
         # One directory per checkpoint and decoding setting, one subdirectory per benchmark.
         run = (Path(config['run_root']) / f"{config['run_prefix']}-step{step}-{suffix}-{config.get('run_suffix', '4gpu')}"
-               / ('cv3' if variant.endswith('_cv3') else 'seed_tts'))
+               / benchmark_dir(variant))
     else:
         run = Path(config['run_root']) / f"{config['run_prefix']}-step{step}-seedtts-{suffix}-{config.get('run_suffix', '4gpu')}"
     return model, run
@@ -95,7 +103,10 @@ def migrate_jobs(jobs):
 def register_jobs(jobs, steps, variants, now, config):
     for step in steps:
         for variant in variants:
-            if variant.endswith('_cv3') and not combined_layout(config, step):
+            if variant.endswith(('_cv3', '_cv3hard')) and not combined_layout(config, step):
+                continue
+            # CV3 hard was added mid-run; earlier checkpoints are not backfilled.
+            if variant.endswith('_cv3hard') and step < config.get('cv3_hard_from_step', 0):
                 continue
             jobs.setdefault(f"{step}:{variant}", {"step": step, "variant": variant,
                 "state": "queued", "discovered_at": now, "attempts": 0})
@@ -197,13 +208,15 @@ def run_job(config, step, variant="default"):
                    '--score-memory-gib', str(config.get('score_memory_gib', 20)),
                    '--score-reserve-gib', str(config.get('gpu_reserve_gib', 6))]
         # CV3 follows the replication protocol: no duration cap (generation stops at max_new_tokens).
-        command.extend(['--benchmark', 'cv3', '--max-audio-seconds', '0'] if variant.endswith('_cv3')
-                       else ['--max-audio-seconds', '30'])
+        if variant.endswith(('_cv3', '_cv3hard')):
+            command.extend(['--benchmark', benchmark_dir(variant), '--max-audio-seconds', '0'])
+        else:
+            command.extend(['--max-audio-seconds', '30'])
         if '_explicit' in variant:
             command.extend(['--language', 'explicit'])
         if '_streaming' in variant:
             command.append('--streaming')
-        if variant.removesuffix('_cv3').removesuffix('_explicit').removesuffix('_streaming') == 'mixed':
+        if base_variant(variant) == 'mixed':
             command.extend(['--talker-temperature', '0.3', '--talker-top-p', '1',
                             '--talker-top-k', '10', '--talker-repetition-penalty', '2',
                             '--code-predictor-greedy'])
@@ -222,7 +235,7 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--step', type=int, help='Execute one queued job instead of monitoring')
     parser.add_argument('--variant', choices=['default', 'mixed', 'default_explicit', 'mixed_explicit', 'default_cv3', 'default_explicit_cv3',
-                                                  'default_streaming', 'mixed_streaming'],
+                                                  'default_streaming', 'mixed_streaming', 'default_cv3hard', 'default_streaming_cv3hard'],
                         default='default')
     parser.add_argument('--gpus', help='Physical GPU IDs selected for one job')
     args = parser.parse_args()
