@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import time
@@ -115,6 +116,16 @@ def prepare_smoke_manifests(destination):
     (destination / "manifest_metadata.json").write_text(json.dumps(metadata, indent=2))
 
 
+def prepare_cv3_hard_manifests(destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    source = ROOT / "raw_data/cv3_manifests"
+    metadata = json.loads((source / "manifest_metadata.json").read_text())
+    names = [name for name in metadata if "_hard_" in name]
+    for name in names:
+        shutil.copyfile(source / f"{name}.jsonl", destination / f"{name}.jsonl")
+    (destination / "manifest_metadata.json").write_text(json.dumps({name: metadata[name] for name in names}, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
@@ -143,8 +154,8 @@ def main():
     parser.add_argument("--max-audio-seconds", type=float, default=0, help="Exclude outputs longer than this duration; zero keeps all outputs")
     parser.add_argument("--language", choices=["auto", "explicit"], default="auto",
                         help="auto omits language IDs; explicit passes English/Chinese (language-ID-trained exports only)")
-    parser.add_argument("--benchmark", choices=["seed", "cv3"], default="seed",
-                        help="cv3 runs the four CV3-Eval zero-shot splits (normal and hard, en/zh) without a smoke phase")
+    parser.add_argument("--benchmark", choices=["seed", "cv3", "cv3_hard"], default="seed",
+                        help="cv3 runs the four CV3-Eval zero-shot splits (normal and hard, en/zh) without a smoke phase; cv3_hard only the two hard splits")
     parser.add_argument("--streaming", action="store_true",
                         help="Streaming text input in the layout the export was trained on (official overlay, or lm_tts interleaved chunks)")
     parser.add_argument("--reference-lead", type=int, metavar="TARGET_TOKENS",
@@ -232,6 +243,8 @@ def main():
     metric_python = str(ROOT / "envs/metrics/bin/python")
     if args.benchmark == "seed":
         prepare_smoke_manifests(run / "smoke_inputs")
+    if args.benchmark == "cv3_hard":
+        prepare_cv3_hard_manifests(run / "cv3_hard_inputs")
     def status(phase):
         state.update(state=phase, updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         (run / "pipeline_status.json").write_text(json.dumps(state, indent=2))
@@ -244,7 +257,8 @@ def main():
         for phase in (phases if args.benchmark == "seed" else ["full"]):
             output = run / phase
             output.mkdir(exist_ok=True)
-            manifests = run / "smoke_inputs" if phase == "smoke" else ROOT / {"seed": "raw_data/seed_tts_manifests", "cv3": "raw_data/cv3_manifests"}[args.benchmark]
+            manifests = run / "smoke_inputs" if phase == "smoke" else {"seed": ROOT / "raw_data/seed_tts_manifests", "cv3": ROOT / "raw_data/cv3_manifests",
+                                                                               "cv3_hard": run / "cv3_hard_inputs"}[args.benchmark]
             shards = 1 if phase == "smoke" else inference_shards
             for mode in args.modes:
                 status(f"{phase}:inference:{mode}")
@@ -286,7 +300,7 @@ def main():
                     language_gpus = language_gpus * args.score_workers_per_gpu
                 for shard, gpu in enumerate(language_gpus):
                     commands.append((f"{phase}-score-{lang}-{shard:02d}",
-                        [metric_python, "-u", "scripts/voice_clone_score.py", "--group", args.benchmark,
+                        [metric_python, "-u", "scripts/voice_clone_score.py", "--group", args.benchmark.removesuffix("_hard"),
                          "--language", lang, "--run-dir", str(output), "--workers", str(len(language_gpus)),
                          "--shard", str(shard), "--max-audio-seconds", str(args.max_audio_seconds),
                          "--models", *args.modes], gpu))
