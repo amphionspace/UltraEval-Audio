@@ -145,15 +145,16 @@ def main():
                             f"Training protocol/language mismatch: {file}")
                     require(cfg["sampling"].get("reference_lead") == args.reference_lead,
                             f"Reference-lead layout mismatch: {file}")
-                    talker = json.loads((Path(cfg["model_path"]) / "config.json").read_text())["talker_config"]
+                    model_config = json.loads((Path(cfg["model_path"]) / "config.json").read_text())
+                    talker = model_config.get("talker_config", {})
                     decoder = (cfg.get("decoder") or {}).get("name")
                     # Older settings predate the decoder field; they all used official qwen_tts.
-                    require(decoder == "lm_tts" if talker.get("lm_tts_streaming_layout") == "interleaved"
+                    require(decoder == "dots_tts" if model_config["model_type"] == "dots_tts"
+                            else decoder == "lm_tts" if talker.get("lm_tts_streaming_layout") == "interleaved"
                             else decoder in (None, "qwen_tts"),
                             f"Decoder does not match the export's layout: {file}")
                     if args.language == "explicit":
-                        model_config = json.loads((Path(cfg["model_path"]) / "config.json").read_text())
-                        require(model_config["talker_config"].get("lm_tts_language_conditioning") == "codec_language_id",
+                        require(talker.get("lm_tts_language_conditioning") == "codec_language_id",
                                 f"Explicit language requires language-ID-trained model: {file}")
                     for key, row in generated.items():
                         if row["index"] % args.num_shards == shard:

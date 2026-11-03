@@ -194,7 +194,13 @@ def main():
         raise ValueError("No-speaker checkpoints require --modes icl_only")
     if digest(model / "model.safetensors") != report["weights_sha256"]:
         raise ValueError("Exported weights do not match export.json")
-    trained_language = json.loads((model / "config.json").read_text())["talker_config"].get(
+    model_config = json.loads((model / "config.json").read_text())
+    dots = model_config["model_type"] == "dots_tts"
+    custom_sampling = args.code_predictor_greedy or any(value is not None for value in (
+        args.talker_temperature, args.talker_top_p, args.talker_top_k, args.talker_repetition_penalty))
+    if dots and (args.streaming or args.greedy or custom_sampling or args.batch_size != 1 or "icl_only" in args.modes):
+        raise ValueError("dots.tts runs non-streaming, batch size 1, speaker modes and official sampling")
+    trained_language = model_config.get("talker_config", {}).get(
         "lm_tts_language_conditioning", "auto")
     if args.language == "explicit" and trained_language != "codec_language_id":
         raise ValueError("Explicit language IDs require an export trained with codec language IDs")
@@ -239,7 +245,7 @@ def main():
     logs = run / "logs"
     logs.mkdir(exist_ok=True)
     env["AUDIO_EVALS_RUNTIME_LOG_DIR"] = str(logs)
-    tts_python = str(ROOT / "envs/tts/bin/python")
+    tts_python = str(ROOT / ("envs/dots/bin/python" if dots else "envs/tts/bin/python"))
     metric_python = str(ROOT / "envs/metrics/bin/python")
     if args.benchmark == "seed":
         prepare_smoke_manifests(run / "smoke_inputs")

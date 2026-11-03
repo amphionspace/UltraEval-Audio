@@ -71,7 +71,7 @@ def qwen_generation_params(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="Registered model name or local model output label")
-    parser.add_argument("--model-path", help="Exported local Qwen3-TTS or LFM-TTS checkpoint")
+    parser.add_argument("--model-path", help="Exported local Qwen3-TTS, LFM-TTS or dots.tts checkpoint")
     parser.add_argument("--conditioning", choices=["speaker_only", "speaker_icl", "icl_only"])
     parser.add_argument("--non-streaming", action="store_true", help="Use the non-streaming training protocol")
     parser.add_argument("--reference-lead", type=int, metavar="TARGET_TOKENS",
@@ -139,12 +139,16 @@ def main():
         model_family = raw_config["model_type"]
         if custom_qwen and model_family != "qwen3_tts":
             raise ValueError("Custom Talker / Code Predictor settings require a Qwen checkpoint")
-        model_speaker = raw_config["talker_config"].get("lm_tts_use_speaker_embedding", True)
+        talker_config = raw_config.get("talker_config", {})
+        model_speaker = talker_config.get("lm_tts_use_speaker_embedding", True)
         if model_family == "lfm2_tts" and (args.batch_size != 1 or not args.non_streaming or not args.language_auto):
             raise ValueError("LFM inference requires batch size 1, non-streaming and Auto language")
+        if model_family == "dots_tts" and (args.batch_size != 1 or not args.non_streaming
+                                           or not args.language_auto or args.greedy):
+            raise ValueError("dots.tts inference requires batch size 1, non-streaming, Auto language and sampling")
         if exported_speaker != model_speaker:
             raise ValueError("Export and model config disagree on speaker conditioning")
-        trained_language = raw_config["talker_config"].get("lm_tts_language_conditioning", "auto")
+        trained_language = talker_config.get("lm_tts_language_conditioning", "auto")
         if not args.language_auto and trained_language != "codec_language_id":
             raise ValueError("This export never saw language IDs; pass --language-auto")
         if not exported_speaker and args.conditioning != "icl_only":
@@ -217,6 +221,20 @@ def main():
         args.fast = False
         adapter = LfmVoiceClone(model_dir, conditioning=args.conditioning,
                                max_audio_seconds=args.max_audio_seconds, greedy=args.greedy)
+        params, paths_used = adapter.params, adapter.paths_used
+
+        def generate(batch, seed):
+            result = adapter.generate(batch, seed)
+            validation = {**paths_used, "batch_size": len(batch), "model": args.model}
+            (output_dir / f"conditioning-verified-{args.shard:02d}.json").write_text(json.dumps(validation, indent=2))
+            return result
+
+    elif model_family == "dots_tts":
+        from local_dots import DotsVoiceClone
+
+        args.fast = False
+        decoder = {"name": "dots_tts"}
+        adapter = DotsVoiceClone(model_dir, conditioning=args.conditioning)
         params, paths_used = adapter.params, adapter.paths_used
 
         def generate(batch, seed):
