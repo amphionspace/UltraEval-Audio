@@ -70,6 +70,10 @@ def main():
         model_dir = run_dir / model
         generated, scored = {}, {}
         historical_errors = Counter()
+        # dots.tts decodes 48 kHz audio; every other supported model decodes 24 kHz.
+        decoders = {(json.loads(f.read_text()).get("decoder") or {}).get("name")
+                    for f in model_dir.glob("settings-*.json")}
+        sample_rate = 48000 if decoders == {"dots_tts"} else 24000
         for file, row in records(model_dir.glob("inference-*.jsonl")):
             if row["status"] != "ok":
                 historical_errors["inference"] += 1
@@ -85,7 +89,7 @@ def main():
             require((row["seed"], row["batch_size"]) == expected_batches[key],
                     f"Seed/batch: {model} {key}")
             info = sf.info(path)
-            require(info.samplerate == row["sample_rate"] == 24000 and info.channels == 1
+            require(info.samplerate == row["sample_rate"] == sample_rate and info.channels == 1
                     and info.frames > 0 and info.subtype == "PCM_16", f"WAV format: {path}")
             require(abs(info.duration - row["duration"]) < 1e-8, f"WAV duration: {path}")
             generated[key] = row
