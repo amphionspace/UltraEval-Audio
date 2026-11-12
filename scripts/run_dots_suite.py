@@ -6,6 +6,7 @@ On ACP: python -m scripts.acp.submit --name ... --log-dir <run-dir>/logs --submi
   scripts/run_dots_suite.py --model-path init_model/<export> --run-dir res/<run>
 """
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,16 @@ def main():
     parser.add_argument("--benchmarks", nargs="+", choices=BENCHMARKS, default=list(BENCHMARKS))
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--workers-per-gpu", type=int, default=4)
+    parser.add_argument("--template", help="dots.tts runtime template for every benchmark (default: tts)")
+    parser.add_argument("--instruction",
+                        help="Style instruction for instruction-trained exports, e.g. the default "
+                             "'Speak the following text.'; uses the interleave layout")
     args = parser.parse_args()
+    # Inference workers inherit these (scripts/local_dots.py); journals record the values used.
+    if args.template:
+        os.environ["DOTS_TEMPLATE"] = args.template
+    if args.instruction:
+        os.environ["DOTS_INSTRUCTION"] = args.instruction
     common = ["--model-path", args.model_path, "--gpus", args.gpus, "--workers-per-gpu", str(args.workers_per_gpu)]
     commands = {
         "nv_bench": ["scripts/run_nv_bench.py", *common, "--run-dir", args.run_dir, "--inference-shards", "32"],
