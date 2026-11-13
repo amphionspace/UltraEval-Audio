@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--benchmarks", nargs="+", choices=BENCHMARKS, default=list(BENCHMARKS))
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--workers-per-gpu", type=int, default=4)
+    parser.add_argument("--gpu-memory-gib", type=float,
+                        help="Per-inference-worker allocation cap for Seed-TTS / CV3 (run_seed_tts default 8)")
     parser.add_argument("--template", help="dots.tts runtime template for every benchmark (default: tts)")
     parser.add_argument("--instruction",
                         help="Style instruction for instruction-trained exports, e.g. the default "
@@ -37,7 +39,8 @@ def main():
         "nv_bench": ["scripts/run_nv_bench.py", *common, "--run-dir", args.run_dir, "--inference-shards", "32"],
         **{name: ["scripts/run_seed_tts.py", *common, "--run-dir", f"{args.run_dir}/{name}",
                   "--benchmark", {"seed_tts": "seed", "cv3": "cv3"}[name], "--score-workers-per-gpu", "2",
-                  "--modes", "speaker_only", "speaker_icl", "--max-audio-seconds", "30"]
+                  "--modes", "speaker_only", "speaker_icl", "--max-audio-seconds", "30",
+                  *(["--gpu-memory-gib", str(args.gpu_memory_gib)] if args.gpu_memory_gib else [])]
            for name in ("seed_tts", "cv3")},
     }
     failed = []
