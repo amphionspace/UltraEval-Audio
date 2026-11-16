@@ -17,6 +17,7 @@ import unicodedata
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 # librosa.pyin segfaults on the shared numba cache (.cache/numba); keep its JIT cache node-local.
 os.environ["NUMBA_CACHE_DIR"] = f"/tmp/style-bench-numba-{os.getuid()}"
@@ -133,7 +134,10 @@ def score(args):
             if r["language"] == "zh":
                 hypothesis = paraformer.generate(input=r["audio"])[0]["text"]
             else:
-                hypothesis = whisper(r["audio"], generate_kwargs=dict(
+                # Runaway generations can exceed Whisper's 30 s window; long-form decoding
+                # then requires timestamps (the text is unchanged otherwise).
+                long_form = sf.info(r["audio"]).duration > 30
+                hypothesis = whisper(r["audio"], return_timestamps=long_form, generate_kwargs=dict(
                     language=WHISPER_LANG[r["language"]], task="transcribe"))["text"]
             edits, length = error_rate(r["text"], hypothesis, r["language"])
             sim = (float(similarity(r["audio"], r["prompt_audio"])["simo"])
