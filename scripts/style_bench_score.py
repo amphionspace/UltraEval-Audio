@@ -132,7 +132,10 @@ def score(args):
             emotion = e2v.generate(r["audio"], granularity="utterance", extract_embedding=True)[0]
             labels = [label.split("/")[-1] for label in emotion["labels"]]
             if r["language"] == "zh":
-                hypothesis = paraformer.generate(input=r["audio"])[0]["text"]
+                # Paraformer returns no result for silent / near-empty audio: score it as an empty
+                # transcript (all deletions) rather than skipping the row.
+                result = paraformer.generate(input=r["audio"])
+                hypothesis = result[0]["text"] if result else ""
             else:
                 # Runaway generations can exceed Whisper's 30 s window; long-form decoding
                 # then requires timestamps (the text is unchanged otherwise).
@@ -140,8 +143,14 @@ def score(args):
                 hypothesis = whisper(r["audio"], return_timestamps=long_form, generate_kwargs=dict(
                     language=WHISPER_LANG[r["language"]], task="transcribe"))["text"]
             edits, length = error_rate(r["text"], hypothesis, r["language"])
-            sim = (float(similarity(r["audio"], r["prompt_audio"])["simo"])
-                   if r.get("prompt_audio") else None)
+            sim = None
+            if r.get("prompt_audio"):
+                # WavLM fails on a near-empty generation (a single feature frame); such an
+                # output carries no speaker, so it scores 0 instead of aborting the shard.
+                if sf.info(r["audio"]).duration < 0.1:
+                    sim = 0.0
+                else:
+                    sim = float(similarity(r["audio"], r["prompt_audio"])["simo"])
             log.write(json.dumps(dict(
                 key=r["key"], subset=r["subset"], item=r["item"], condition=r["condition"],
                 emotion=dict(zip(labels, map(float, emotion["scores"]))),

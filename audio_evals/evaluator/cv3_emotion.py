@@ -60,10 +60,13 @@ class CV3EmotionEval(Evaluator):
             "surprised",
             "unk",
         ]
-        for label in labels:
-            if label in label:
-                ref_emotion = label
-                break
+        # The dataset ref_col is the utterance id, e.g. emotion_zeroshot_happy_high_uttid_1; the
+        # official eval_emotation.py takes the emotion from that id. (The loop variable used to
+        # shadow `label`, so every row was scored against "angry".)
+        tokens = str(kwargs.get("ref_emotion") or label).split("_")
+        ref_emotion = next((name for name in labels if name in tokens), None)
+        if ref_emotion is None:
+            raise ValueError(f"No emotion label in reference id {label!r}")
 
         # Run emotion recognition on generated audio
         emotion_pred, emotion_score = self.model.inference({"audio": pred})
