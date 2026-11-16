@@ -103,8 +103,13 @@ def acoustics(path, text, language):
 
 def score(args):
     import torch
+    import funasr.utils.install_model_requirements as model_requirements
     from funasr import AutoModel
     from transformers import pipeline
+
+    # emotion2vec ships a requirements.txt (funasr==1.0.27); funasr would pip-install it on load,
+    # which hangs forever on offline ACP nodes. The installed funasr already runs the model.
+    model_requirements.install_requirements = lambda path: True
 
     from voice_clone_score import configure
 
