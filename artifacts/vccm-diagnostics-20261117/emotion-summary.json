@@ -1,0 +1,388 @@
+{
+  "style_easy|cv3": {
+    "n": 480,
+    "base_pred": {
+      "acc": 34.791666666666664,
+      "per_class": {
+        "angry": {
+          "n": 80,
+          "acc": 41.25
+        },
+        "disgusted": {
+          "n": 80,
+          "acc": 2.5
+        },
+        "fear": {
+          "n": 80,
+          "acc": 1.25
+        },
+        "happy": {
+          "n": 80,
+          "acc": 46.25
+        },
+        "sad": {
+          "n": 80,
+          "acc": 83.75
+        },
+        "surprised": {
+          "n": 80,
+          "acc": 33.75
+        }
+      },
+      "pred_counts": {
+        "angry": 70,
+        "sad": 216,
+        "surprised": 54,
+        "happy": 90,
+        "neutral": 37,
+        "disgusted": 12,
+        "fear": 1
+      },
+      "macro_six": 34.791666666666664
+    },
+    "plus_pred": {
+      "acc": 27.916666666666668,
+      "per_class": {
+        "angry": {
+          "n": 80,
+          "acc": 38.75
+        },
+        "disgusted": {
+          "n": 80,
+          "acc": 2.5
+        },
+        "fear": {
+          "n": 80,
+          "acc": 1.25
+        },
+        "happy": {
+          "n": 80,
+          "acc": 40.0
+        },
+        "sad": {
+          "n": 80,
+          "acc": 56.25
+        },
+        "surprised": {
+          "n": 80,
+          "acc": 28.75
+        }
+      },
+      "pred_counts": {
+        "sad": 96,
+        "fear": 2,
+        "happy": 112,
+        "neutral": 159,
+        "angry": 60,
+        "surprised": 42,
+        "disgusted": 9
+      },
+      "macro_six": 27.916666666666668
+    }
+  },
+  "style_easy|v5": {
+    "n": 480,
+    "base_pred": {
+      "acc": 49.583333333333336,
+      "per_class": {
+        "angry": {
+          "n": 80,
+          "acc": 70.0
+        },
+        "disgusted": {
+          "n": 80,
+          "acc": 7.5
+        },
+        "fear": {
+          "n": 80,
+          "acc": 20.0
+        },
+        "happy": {
+          "n": 80,
+          "acc": 83.75
+        },
+        "sad": {
+          "n": 80,
+          "acc": 68.75
+        },
+        "surprised": {
+          "n": 80,
+          "acc": 47.5
+        }
+      },
+      "pred_counts": {
+        "angry": 108,
+        "surprised": 50,
+        "happy": 133,
+        "fear": 38,
+        "sad": 110,
+        "neutral": 34,
+        "disgusted": 7
+      },
+      "macro_six": 49.583333333333336
+    },
+    "plus_pred": {
+      "acc": 53.75,
+      "per_class": {
+        "angry": {
+          "n": 80,
+          "acc": 86.25
+        },
+        "disgusted": {
+          "n": 80,
+          "acc": 28.75
+        },
+        "fear": {
+          "n": 80,
+          "acc": 8.75
+        },
+        "happy": {
+          "n": 80,
+          "acc": 71.25
+        },
+        "sad": {
+          "n": 80,
+          "acc": 72.5
+        },
+        "surprised": {
+          "n": 80,
+          "acc": 55.0
+        }
+      },
+      "pred_counts": {
+        "angry": 99,
+        "surprised": 63,
+        "happy": 96,
+        "neutral": 82,
+        "disgusted": 38,
+        "sad": 91,
+        "fear": 11
+      },
+      "macro_six": 53.75
+    }
+  },
+  "vccm|cv3": {
+    "n": 133,
+    "base_pred": {
+      "acc": 54.13533834586466,
+      "per_class": {
+        "angry": {
+          "n": 24,
+          "acc": 83.33333333333333
+        },
+        "disgusted": {
+          "n": 15,
+          "acc": 46.666666666666664
+        },
+        "fear": {
+          "n": 10,
+          "acc": 30.0
+        },
+        "happy": {
+          "n": 25,
+          "acc": 68.0
+        },
+        "neutral": {
+          "n": 14,
+          "acc": 64.28571428571429
+        },
+        "sad": {
+          "n": 31,
+          "acc": 29.032258064516128
+        },
+        "surprised": {
+          "n": 14,
+          "acc": 50.0
+        }
+      },
+      "pred_counts": {
+        "angry": 44,
+        "surprised": 8,
+        "neutral": 31,
+        "sad": 12,
+        "happy": 25,
+        "disgusted": 9,
+        "fear": 4
+      },
+      "macro_six": 51.17204301075268
+    },
+    "plus_pred": {
+      "acc": 40.6015037593985,
+      "per_class": {
+        "angry": {
+          "n": 24,
+          "acc": 41.666666666666664
+        },
+        "disgusted": {
+          "n": 15,
+          "acc": 26.666666666666668
+        },
+        "fear": {
+          "n": 10,
+          "acc": 20.0
+        },
+        "happy": {
+          "n": 25,
+          "acc": 32.0
+        },
+        "neutral": {
+          "n": 14,
+          "acc": 100.0
+        },
+        "sad": {
+          "n": 31,
+          "acc": 25.806451612903224
+        },
+        "surprised": {
+          "n": 14,
+          "acc": 57.142857142857146
+        }
+      },
+      "pred_counts": {
+        "angry": 16,
+        "neutral": 71,
+        "surprised": 8,
+        "happy": 13,
+        "sad": 16,
+        "disgusted": 7,
+        "fear": 2
+      },
+      "macro_six": 33.88044034818228
+    }
+  },
+  "vccm|gt": {
+    "n": 133,
+    "plus_pred": {
+      "acc": 87.21804511278195,
+      "per_class": {
+        "angry": {
+          "n": 24,
+          "acc": 95.83333333333333
+        },
+        "disgusted": {
+          "n": 15,
+          "acc": 80.0
+        },
+        "fear": {
+          "n": 10,
+          "acc": 80.0
+        },
+        "happy": {
+          "n": 25,
+          "acc": 84.0
+        },
+        "neutral": {
+          "n": 14,
+          "acc": 100.0
+        },
+        "sad": {
+          "n": 31,
+          "acc": 80.64516129032258
+        },
+        "surprised": {
+          "n": 14,
+          "acc": 92.85714285714286
+        }
+      },
+      "pred_counts": {
+        "neutral": 21,
+        "sad": 29,
+        "surprised": 13,
+        "angry": 24,
+        "disgusted": 15,
+        "happy": 22,
+        "fear": 9
+      },
+      "macro_six": 85.55593958013314
+    }
+  },
+  "vccm|v5": {
+    "n": 133,
+    "base_pred": {
+      "acc": 40.6015037593985,
+      "per_class": {
+        "angry": {
+          "n": 24,
+          "acc": 66.66666666666667
+        },
+        "disgusted": {
+          "n": 15,
+          "acc": 26.666666666666668
+        },
+        "fear": {
+          "n": 10,
+          "acc": 40.0
+        },
+        "happy": {
+          "n": 25,
+          "acc": 32.0
+        },
+        "neutral": {
+          "n": 14,
+          "acc": 42.857142857142854
+        },
+        "sad": {
+          "n": 31,
+          "acc": 41.935483870967744
+        },
+        "surprised": {
+          "n": 14,
+          "acc": 21.428571428571427
+        }
+      },
+      "pred_counts": {
+        "angry": 59,
+        "sad": 30,
+        "surprised": 4,
+        "happy": 10,
+        "fear": 6,
+        "neutral": 15,
+        "disgusted": 9
+      },
+      "macro_six": 38.116231438812086
+    },
+    "plus_pred": {
+      "acc": 33.83458646616541,
+      "per_class": {
+        "angry": {
+          "n": 24,
+          "acc": 41.666666666666664
+        },
+        "disgusted": {
+          "n": 15,
+          "acc": 33.333333333333336
+        },
+        "fear": {
+          "n": 10,
+          "acc": 10.0
+        },
+        "happy": {
+          "n": 25,
+          "acc": 40.0
+        },
+        "neutral": {
+          "n": 14,
+          "acc": 71.42857142857143
+        },
+        "sad": {
+          "n": 31,
+          "acc": 22.580645161290324
+        },
+        "surprised": {
+          "n": 14,
+          "acc": 14.285714285714286
+        }
+      },
+      "pred_counts": {
+        "angry": 23,
+        "surprised": 4,
+        "sad": 12,
+        "neutral": 62,
+        "happy": 21,
+        "fear": 3,
+        "disgusted": 8
+      },
+      "macro_six": 26.977726574500767
+    }
+  }
+}

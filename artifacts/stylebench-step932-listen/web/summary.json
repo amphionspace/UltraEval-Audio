@@ -1,0 +1,16 @@
+{
+  "examples": 2252,
+  "generated_audio": 8188,
+  "served_audio_files": 10751,
+  "subsets": {
+    "paraling_zh": 240,
+    "paraling_en": 252,
+    "emotion_zh": 480,
+    "emotion_en": 480,
+    "free_zh": 200,
+    "free_en": 200,
+    "free_ja": 200,
+    "free_ko": 200
+  },
+  "missing": []
+}
