@@ -109,3 +109,6 @@ coverage/
 
 # Runtime session cache created by model dependencies.
 /:memory:.ses
+
+
+artifacts/
